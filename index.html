@@ -806,7 +806,7 @@ function viewReportImportReview() {
       ${checklist}
       <form id="importReviewForm">
         <label>Texto corrigido (gramática e terminologia — conteúdo original preservado)</label>
-        <textarea name="edited_text" rows="8" required>${state.activeReport.generated_content_json.text}</textarea>
+        <textarea name="edited_text" rows="8" required>${state.activeReport.generated_content_json?.text || ""}</textarea>
         <div style="margin-top:16px;">
           <button class="btn primary" type="submit">Confirmar revisão</button>
         </div>
