@@ -1,175 +1,241 @@
-const pool = require("../db/pool");
-
-const ITEM_CATEGORY_TO_NORM_SCOPE = {
-  estrutura: ["estrutural", "vistoria"],
-  paredes: ["vistoria"],
-  infiltracao: ["vistoria"],
-  impermeabilizacao: ["vistoria"],
-  instalacoes_eletricas: ["vistoria"],
-  conclusao_obra: ["conclusao_obra"],
-};
-
 /**
- * Busca normas candidatas combinando duas fontes de sinal:
- *  1. A categoria do item vistoriado (regra fixa, como já existia)
- *  2. Palavras-chave da norma que aparecem no texto da observação
- *     (novo — melhora a precisão quando o engenheiro descreve algo
- *     que a categoria sozinha não captura, ex: "infiltração" mencionada
- *     dentro de um item categorizado só como "paredes")
- *
- * Inclui tanto as normas padrão do sistema (engineer_id IS NULL) quanto
- * as normas customizadas do próprio escritório do engenheiro.
- *
- * Retorna as normas ordenadas por relevância (score), não apenas por código.
+ * Geração do PDF final do laudo — estrutura formal seguindo o padrão
+ * de mercado de um Laudo Técnico de Avaliação e Inspeção Predial:
+ *   1. Identificação (contratante, objeto da perícia, endereço, finalidade)
+ *   2. Objetivo (parágrafo formal do propósito da vistoria)
+ *   3. Vistoria e Diagnóstico (data + descrição técnica)
+ *   4. Parecer Técnico Conclusivo (conclusão e recomendação, separado do diagnóstico)
+ *   5. Encerramento (nº de páginas, fotos anexas, local/data, ART)
+ * Mais: assinatura e rodapé de rastreabilidade em todas as páginas.
  */
-async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
-  const scopes = new Set();
-  for (const category of itemCategories) {
-    const mapped = ITEM_CATEGORY_TO_NORM_SCOPE[category] || ["vistoria"];
-    mapped.forEach((s) => scopes.add(s));
-  }
 
-  const { rows } = await pool.query(
-    `SELECT code, title, scope_summary, keywords
-     FROM technical_norms
-     WHERE (applies_to = ANY($1) OR engineer_id = $2)
-       AND status = 'vigente'
-       AND (engineer_id IS NULL OR engineer_id = $2)
-     ORDER BY code`,
-    [Array.from(scopes), engineerId]
-  );
+const PDFDocument = require("pdfkit");
 
-  const observationLower = (rawObservation || "").toLowerCase();
+function generateReportPdf({ engineer, project, client, report, norms, photos = [], photoCount = 0 }) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: 56, bufferPages: true });
+    const chunks = [];
 
-  // Score simples: +1 por categoria batida (já filtrado acima) e
-  // +2 por cada palavra-chave da norma encontrada literalmente no texto
-  // da observação. Isso prioriza normas cujo vocabulário bate com o que
-  // o engenheiro realmente escreveu, em vez de só a categoria genérica.
-  const scored = rows.map((norm) => {
-    const keywordHits = (norm.keywords || []).filter((kw) =>
-      observationLower.includes(kw.toLowerCase())
-    );
-    return {
-      code: norm.code,
-      title: norm.title,
-      scope_summary: norm.scope_summary,
-      score: 1 + keywordHits.length * 2,
-      matchedKeywords: keywordHits,
-    };
-  });
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
 
-  scored.sort((a, b) => b.score - a.score);
+    const vistoriaDate = new Date(report.created_at).toLocaleDateString("pt-BR");
+    const emissaoDate = new Date().toLocaleDateString("pt-BR");
 
-  // Limita a no máximo 4 candidatas para não poluir o prompt e não
-  // dar à IA opções demais entre as quais ela poderia errar a escolha
-  return scored.slice(0, 4);
-}
-
-function buildSystemPrompt(candidateNorms) {
-  const normsList = candidateNorms
-    .map((n) => `- ${n.code} (${n.title}): ${n.scope_summary}`)
-    .join("\n");
-
-  return `Você é um assistente de redação técnica para laudos de engenharia civil.
-
-Sua tarefa é reformular a observação do engenheiro em linguagem técnica formal,
-seguindo estas regras obrigatórias e inegociáveis:
-
-1. Use APENAS os fatos mencionados pelo engenheiro. Nunca adicione gravidade,
-   causa, risco ou conclusão que ele não tenha escrito.
-2. NUNCA invente medidas, ângulos, percentuais, prazos, datas, materiais de
-   reparo, métodos de execução ou recomendações técnicas específicas que não
-   tenham sido explicitamente informados pelo engenheiro. Se ele não disse o
-   tamanho da fissura, você não estima um tamanho. Se ele não recomendou um
-   reparo, você não recomenda um método de reparo.
-3. O nível de detalhe da sua reformulação deve ser proporcional ao nível de
-   detalhe da observação original. Uma observação curta e vaga (ex: uma ou
-   duas palavras) deve gerar um texto igualmente curto e vago — reformulado
-   em linguagem técnica, mas sem expandir o conteúdo para parecer mais
-   completo do que realmente é. Nunca "compense" a falta de informação do
-   engenheiro com elaboração própria.
-4. Dentre as normas abaixo (já pré-selecionadas e ordenadas por relevância ao
-   texto), escolha no máximo 1 que seja pertinente ao trecho, e cite apenas o
-   código e título dela — nunca cite ou repita conteúdo do texto integral da
-   norma, pois isso não está disponível para você. Se nenhuma norma listada
-   for de fato pertinente, não cite nenhuma — não force uma citação só porque
-   havia candidatas na lista.
-5. Se não tiver certeza sobre um fato, mantenha a redação tão vaga quanto a
-   observação original — não preencha lacunas.
-
-Normas candidatas para este laudo, da mais para a menos relevante:
-${normsList}
-
-Responda APENAS em JSON válido, sem markdown e sem texto fora do JSON, com os
-campos:
-- "generated_text": o texto reformulado, proporcional em detalhe ao que foi informado
-- "cited_norm_code": código da norma citada, ou null
-- "insufficient_detail": true se a observação original for vaga demais para
-  compor uma descrição técnica útil (ex: menos de uma frase completa, sem
-  nenhum detalhe concreto sobre o que foi observado), false caso contrário
-
-Se o texto gerado contiver aspas duplas, escape-as corretamente (\\") para
-manter o JSON válido. Não use quebras de linha literais dentro do valor de
-"generated_text" — use espaços no lugar.`;
-}
-
-async function generateTechnicalText(rawObservation, itemCategories, engineerId) {
-  const candidateNorms = await getCandidateNorms(itemCategories, rawObservation, engineerId);
-  const systemPrompt = buildSystemPrompt(candidateNorms);
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: [{ role: "user", content: `Observação do engenheiro: "${rawObservation}"` }],
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Erro na API da IA: ${response.status} - ${errText}`);
-  }
-
-  const data = await response.json();
-  const textBlock = data.content.find((c) => c.type === "text");
-  const rawText = textBlock.text.replace(/```json|```/g, "").trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch (err) {
-    // A IA ocasionalmente gera JSON malformado (ex: aspas não escapadas
-    // dentro do texto). Em vez de falhar por completo, extraímos o texto
-    // gerado por regex como plano B, mantendo a experiência funcional.
-    const match = rawText.match(/"generated_text"\s*:\s*"([\s\S]*?)"\s*,\s*"cited_norm_code"/);
-    if (match) {
-      parsed = {
-        generated_text: match[1].replace(/\\"/g, '"').replace(/\\n/g, "\n"),
-        cited_norm_code: null,
-      };
-    } else {
-      // Último recurso: usa o texto bruto retornado pela IA, sem formatação JSON
-      parsed = { generated_text: rawText, cited_norm_code: null };
+    // ---------------------------------------------------------
+    // Cabeçalho
+    // ---------------------------------------------------------
+    if (engineer.logo_url && engineer.logo_buffer) {
+      doc.image(engineer.logo_buffer, 56, doc.y, { width: 90 });
+      doc.x = 160;
     }
-  }
 
-  return {
-    generatedText: parsed.generated_text,
-    citedNormCode: parsed.cited_norm_code,
-    insufficientDetail: parsed.insufficient_detail === true,
-    candidateNormsConsidered: candidateNorms.map((n) => ({
-      code: n.code,
-      score: n.score,
-      matchedKeywords: n.matchedKeywords,
-    })),
-  };
+    doc
+      .fontSize(14)
+      .fillColor("#2C2C2A")
+      .text(engineer.company_name || engineer.name, { align: "left" })
+      .fontSize(9)
+      .fillColor("#6B6A64")
+      .text(`${engineer.name} — CREA ${engineer.crea_number}/${engineer.crea_region}`)
+      .moveDown(1.2);
+
+    doc
+      .moveTo(56, doc.y)
+      .lineTo(539, doc.y)
+      .strokeColor("#E0DED6")
+      .lineWidth(0.5)
+      .stroke()
+      .moveDown(1);
+
+    doc
+      .fontSize(15)
+      .fillColor("#2C2C2A")
+      .font("Helvetica-Bold")
+      .text("LAUDO TÉCNICO DE AVALIAÇÃO E INSPEÇÃO PREDIAL", { align: "left" })
+      .moveDown(1);
+
+    // ---------------------------------------------------------
+    // 1. IDENTIFICAÇÃO
+    // ---------------------------------------------------------
+    sectionTitle(doc, "1. Identificação");
+    const identRows = [
+      ["Contratante", client?.name || "-"],
+      ["Objeto da perícia", project?.building_name || "-"],
+      ["Endereço", project?.address || "-"],
+    ];
+    fieldRows(doc, identRows);
+    doc.moveDown(0.8);
+
+    // ---------------------------------------------------------
+    // 2. OBJETIVO
+    // ---------------------------------------------------------
+    sectionTitle(doc, "2. Objetivo");
+    doc
+      .font("Helvetica")
+      .fontSize(10.5)
+      .fillColor("#2C2C2A")
+      .text(
+        `O presente laudo tem por objetivo realizar a inspeção visual e técnica no imóvel acima identificado, com o intuito de constatar e registrar as condições observadas, apontando diretrizes quando aplicável.`,
+        { align: "justify", lineGap: 3 }
+      )
+      .moveDown(0.8);
+
+    // ---------------------------------------------------------
+    // 3. VISTORIA E DIAGNÓSTICO
+    // ---------------------------------------------------------
+    sectionTitle(doc, "3. Vistoria e Diagnóstico");
+    doc
+      .font("Helvetica")
+      .fontSize(10.5)
+      .fillColor("#2C2C2A")
+      .text(`Data da vistoria: ${vistoriaDate}`, { continued: false })
+      .moveDown(0.4)
+      .text(report.generated_content_json?.text || "", { align: "justify", lineGap: 3 })
+      .moveDown(0.8);
+
+    // ---------------------------------------------------------
+    // 4. PARECER TÉCNICO
+    // ---------------------------------------------------------
+    sectionTitle(doc, "4. Parecer Técnico");
+    doc
+      .font("Helvetica")
+      .fontSize(10.5)
+      .fillColor("#2C2C2A")
+      .text(report.technical_opinion_json?.text || "Sem parecer conclusivo registrado.", {
+        align: "justify",
+        lineGap: 3,
+      })
+      .moveDown(0.8);
+
+    if (norms && norms.length > 0) {
+      doc
+        .fontSize(9)
+        .fillColor("#6B6A64")
+        .font("Helvetica-Bold")
+        .text("Normas técnicas de referência: ", { continued: true })
+        .font("Helvetica")
+        .text(norms.map((n) => `${n.code} — ${n.title}`).join("; "))
+        .moveDown(0.8);
+    }
+
+    // ---------------------------------------------------------
+    // Registro fotográfico (se houver fotos anexadas)
+    // ---------------------------------------------------------
+    if (photos && photos.length > 0) {
+      sectionTitle(doc, "Registro Fotográfico");
+      const imgWidth = 220;
+      const imgHeight = 165;
+      let col = 0;
+      let rowStartY = doc.y;
+
+      photos.forEach((photo, idx) => {
+        if (doc.y + imgHeight + 20 > 740) {
+          doc.addPage();
+          rowStartY = doc.y;
+          col = 0;
+        }
+        const x = 56 + col * (imgWidth + 20);
+        try {
+          const base64 = photo.url.split(",")[1];
+          const buffer = Buffer.from(base64, "base64");
+          doc.image(buffer, x, rowStartY, { width: imgWidth, height: imgHeight, fit: [imgWidth, imgHeight] });
+          if (photo.caption) {
+            doc
+              .fontSize(8)
+              .fillColor("#6B6A64")
+              .text(photo.caption, x, rowStartY + imgHeight + 4, { width: imgWidth });
+          }
+        } catch (imgErr) {
+          // Se uma foto individual estiver corrompida, pula ela em vez
+          // de quebrar a geração do PDF inteiro
+          doc.fontSize(8).fillColor("#791F1F").text("[imagem indisponível]", x, rowStartY);
+        }
+
+        col++;
+        if (col >= 2) {
+          col = 0;
+          rowStartY += imgHeight + 30;
+          doc.y = rowStartY;
+        }
+      });
+
+      doc.y = rowStartY + (col > 0 ? imgHeight + 30 : 0);
+      doc.moveDown(1);
+    }
+
+    // ---------------------------------------------------------
+    // 5. ENCERRAMENTO
+    // ---------------------------------------------------------
+    sectionTitle(doc, "5. Encerramento");
+    doc
+      .font("Helvetica")
+      .fontSize(10.5)
+      .fillColor("#2C2C2A")
+      .text(
+        photoCount > 0
+          ? `Este laudo possui ${photoCount} fotografia(s) anexada(s) como registro do estado observado.`
+          : `Este laudo não possui fotografias anexadas.`
+      )
+      .moveDown(0.3)
+      .text(`${engineer.crea_region || ""}, ${emissaoDate}.`)
+      .moveDown(1.5);
+
+    // ---------------------------------------------------------
+    // Assinatura
+    // ---------------------------------------------------------
+    const sigY = doc.y;
+    doc
+      .moveTo(56, sigY)
+      .lineTo(280, sigY)
+      .strokeColor("#2C2C2A")
+      .lineWidth(0.5)
+      .stroke();
+    doc
+      .fontSize(9)
+      .fillColor("#44433F")
+      .text(engineer.name, 56, sigY + 6)
+      .text(`CREA-${engineer.crea_region}: ${engineer.crea_number}`, 56, sigY + 20);
+    if (report.art_number) {
+      doc.text(`ART nº: ${report.art_number}`, 56, sigY + 34);
+    }
+
+    // ---------------------------------------------------------
+    // Rodapé de rastreabilidade (todas as páginas)
+    // ---------------------------------------------------------
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      doc
+        .fontSize(7.5)
+        .fillColor("#999790")
+        .text(
+          `Documento gerado com histórico de revisão rastreável — laudo #${report.id}. Página ${i + 1} de ${range.count}.`,
+          56,
+          780,
+          { width: 483, align: "center" }
+        );
+    }
+
+    doc.end();
+  });
 }
 
-module.exports = { generateTechnicalText, getCandidateNorms };
+function sectionTitle(doc, text) {
+  doc
+    .fontSize(11.5)
+    .fillColor("#2C2C2A")
+    .font("Helvetica-Bold")
+    .text(text)
+    .moveDown(0.4);
+}
+
+function fieldRows(doc, rows) {
+  doc.fontSize(10);
+  rows.forEach(([label, value]) => {
+    doc.font("Helvetica-Bold").fillColor("#44433F").text(`${label}: `, { continued: true });
+    doc.font("Helvetica").fillColor("#2C2C2A").text(value);
+  });
+}
+
+module.exports = { generateReportPdf };

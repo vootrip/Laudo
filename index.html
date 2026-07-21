@@ -280,7 +280,7 @@ async function handleCreateProject(e) {
   try {
     await api("/projects", {
       method: "POST",
-      body: JSON.stringify({ client_id: f.client_id.value, address: f.address.value, project_type: f.project_type.value }),
+      body: JSON.stringify({ client_id: f.client_id.value, address: f.address.value, project_type: f.project_type.value, building_name: f.building_name.value }),
     });
     await loadDashboardData();
     goTo("dashboard");
@@ -303,10 +303,11 @@ async function handleCreateReport(e) {
         project_id: f.project_id.value,
         template_id: f.template_id.value,
         title: f.title.value,
+        art_number: f.art_number.value,
       }),
     });
     state.activeReport = report;
-    goTo("report_generate");
+    goTo("report_choose_source");
   } catch (err) {
     if (err.status === 402) {
       state.error = null;
@@ -344,7 +345,45 @@ async function handleGenerate(e) {
   }
 }
 
-async function handleReview(e) {
+async function handleImportDocument(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fileInput = f.file;
+  if (!fileInput.files.length) {
+    state.error = "Selecione um arquivo .docx ou .pdf.";
+    render();
+    return;
+  }
+
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Revisando...";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch(`${API_BASE}/reports/${state.activeReport.id}/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.token}` },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao importar documento.");
+
+    state.activeReport = data.report;
+    state.lastReview = data.review;
+    goTo("report_import_review");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enviar e revisar";
+  }
+}
+
+async function handleImportReview(e) {
   e.preventDefault();
   const f = e.target;
   try {
@@ -354,7 +393,83 @@ async function handleReview(e) {
     });
     state.activeReport = updated;
     await loadDashboardData();
+    await loadReportPhotos(updated.id);
     goTo("report_done");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+
+async function handleReview(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const updated = await api(`/reports/${state.activeReport.id}/review`, {
+      method: "PATCH",
+      body: JSON.stringify({ edited_text: f.edited_text.value, edited_opinion: f.edited_opinion.value }),
+    });
+    state.activeReport = updated;
+    await loadDashboardData();
+    await loadReportPhotos(updated.id);
+    goTo("report_done");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function loadReportPhotos(reportId) {
+  try {
+    state.reportPhotos = await api(`/reports/${reportId}/photos`);
+  } catch (err) {
+    state.reportPhotos = [];
+  }
+}
+
+async function handleUploadPhotos(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fileInput = f.photos;
+  if (!fileInput.files.length) {
+    state.error = "Selecione ao menos uma foto.";
+    render();
+    return;
+  }
+
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Enviando...";
+
+  const formData = new FormData();
+  Array.from(fileInput.files).forEach((file) => formData.append("photos", file));
+
+  try {
+    const res = await fetch(`${API_BASE}/reports/${state.activeReport.id}/photos`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.token}` },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao enviar fotos.");
+
+    await loadReportPhotos(state.activeReport.id);
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enviar fotos";
+  }
+}
+
+async function handleDeletePhoto(photoId) {
+  try {
+    await api(`/reports/${state.activeReport.id}/photos/${photoId}`, { method: "DELETE" });
+    await loadReportPhotos(state.activeReport.id);
+    render();
   } catch (err) {
     state.error = err.message;
     render();
@@ -391,6 +506,9 @@ function render() {
     case "new_client": content = viewNewClient(); break;
     case "new_project": content = viewNewProject(); break;
     case "new_report": content = viewNewReport(); break;
+    case "report_choose_source": content = viewReportChooseSource(); break;
+    case "report_import": content = viewReportImport(); break;
+    case "report_import_review": content = viewReportImportReview(); break;
     case "report_generate": content = viewReportGenerate(); break;
     case "report_review": content = viewReportReview(); break;
     case "report_done": content = viewReportDone(); break;
@@ -581,6 +699,8 @@ function viewNewProject() {
       <form id="newProjectForm">
         <label>Cliente</label>
         <select name="client_id" required>${options}</select>
+        <label>Objeto da perícia (nome do imóvel/edificação)</label>
+        <input name="building_name" placeholder="Ex: Edifício Residencial Aurora">
         <label>Endereço do imóvel</label>
         <input name="address" required>
         <label>Tipo</label>
@@ -622,11 +742,79 @@ function viewNewReport() {
         <select name="template_id" required>${templateOptions}</select>
         <label>Título do laudo</label>
         <input name="title" placeholder="Ex: Laudo de vistoria - Rua X" required>
+        <label>Número da ART (opcional nesta etapa, recomendado antes da assinatura)</label>
+        <input name="art_number" placeholder="Ex: BR2026123456789">
         <div style="margin-top:16px;"><button class="btn primary" type="submit">Criar rascunho</button></div>
       </form>
     </div>
   `;
 }
+
+function viewReportChooseSource() {
+  return `
+    <div class="card" style="text-align:center; max-width:460px; margin:0 auto;">
+      <h2>${state.activeReport.title}</h2>
+      <p class="subtitle">Como você quer preencher este laudo?</p>
+      <div class="row" style="margin-top:16px;">
+        <button class="btn primary" style="padding:16px;" onclick="goTo('report_generate')">
+          Preencher formulário<br><span style="font-weight:400; font-size:12px;">Descrever a observação e deixar a IA gerar</span>
+        </button>
+        <button class="btn" style="padding:16px;" onclick="goTo('report_import')">
+          Importar documento pronto<br><span style="font-weight:400; font-size:12px;">Já tenho um .docx ou .pdf escrito</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function viewReportImport() {
+  return `
+    <button class="btn" onclick="goTo('report_choose_source')">← Voltar</button>
+    <div class="card" style="margin-top:12px;">
+      <h2>Importar documento existente</h2>
+      <p class="subtitle">A IA vai revisar gramática e apontar o que falta — sem reescrever ou resumir seu texto</p>
+      ${errorHtml()}
+      <form id="importForm">
+        <label>Arquivo (.docx ou .pdf)</label>
+        <input type="file" name="file" accept=".docx,.pdf" required>
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Enviar e revisar</button></div>
+      </form>
+    </div>
+  `;
+}
+
+function viewReportImportReview() {
+  const review = state.lastReview || {};
+  const missing = review.missing_items || [];
+  const incomplete = review.incomplete_items || [];
+  const hasBlockingIssues = missing.length > 0;
+
+  const checklist = (missing.length || incomplete.length)
+    ? `
+      <div class="card" style="background: var(--bg);">
+        <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Checklist de completude</p>
+        ${missing.map((i) => `<div style="font-size:13px; padding:4px 0;">✕ <span style="color:var(--danger-text);">${i} — ausente</span></div>`).join("")}
+        ${incomplete.map((i) => `<div style="font-size:13px; padding:4px 0;">⚠ <span style="color:var(--warning-text);">${i} — incompleto</span></div>`).join("")}
+        <p style="font-size:11px; color:var(--text-muted); margin:8px 0 0;">Complete o que faltar diretamente no texto abaixo antes de confirmar. A assinatura só será liberada quando não houver itens ausentes.</p>
+      </div>`
+    : `<div class="info-box">✓ Nenhuma pendência encontrada no documento importado.</div>`;
+
+  return `
+    <div class="card">
+      <h2>Revisar documento importado</h2>
+      ${errorHtml()}
+      ${checklist}
+      <form id="importReviewForm">
+        <label>Texto corrigido (gramática e terminologia — conteúdo original preservado)</label>
+        <textarea name="edited_text" rows="8" required>${state.activeReport.generated_content_json.text}</textarea>
+        <div style="margin-top:16px;">
+          <button class="btn primary" type="submit">Confirmar revisão</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
 
 function viewReportGenerate() {
   return `
@@ -636,7 +824,8 @@ function viewReportGenerate() {
       ${errorHtml()}
       <form id="generateForm">
         <label>Observação</label>
-        <textarea name="observation" rows="4" required placeholder="Ex: parede da sala com rachadura de uns 20cm perto da janela, parece ser só reboco"></textarea>
+        <textarea name="observation" rows="4" maxlength="600" required placeholder="Ex: parede da sala com rachadura de uns 20cm perto da janela, parece ser só reboco"></textarea>
+        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Descreva em poucas frases o que você observou. Se já tem um documento inteiro escrito, use <a href="#" onclick="goTo('report_choose_source'); return false;">Importar documento pronto</a> em vez de colar aqui.</p>
         <label>Categorias do item (separadas por vírgula)</label>
         <input name="item_categories" placeholder="Ex: paredes, infiltracao">
         <div style="margin-top:16px;">
@@ -656,8 +845,10 @@ function viewReportReview() {
       ${ai && ai.insufficientDetail ? `<div class="error-box">⚠ A observação original foi muito vaga. O texto abaixo permaneceu igualmente genérico de propósito — a IA não deve preencher lacunas com suposições. Considere voltar e descrever a observação com mais detalhe antes de confirmar.</div>` : ""}
       ${ai && ai.citedNormCode ? `<div class="info-box">Norma citada: ${ai.citedNormCode}</div>` : ""}
       <form id="reviewForm">
-        <label>Texto técnico (editável antes de confirmar)</label>
+        <label>Vistoria e diagnóstico (editável antes de confirmar)</label>
         <textarea name="edited_text" rows="6" required>${state.activeReport.generated_content_json.text}</textarea>
+        <label>Parecer técnico conclusivo (editável antes de confirmar)</label>
+        <textarea name="edited_opinion" rows="4" required>${state.activeReport.technical_opinion_json?.text || ai?.technicalOpinion || ""}</textarea>
         <div style="margin-top:16px; display:flex; gap:8px;">
           <button type="button" class="btn" onclick="goTo('report_generate')">Gerar novamente</button>
           <button class="btn primary" type="submit">Confirmar revisão</button>
@@ -668,6 +859,7 @@ function viewReportReview() {
 }
 
 function viewReportDone() {
+  const photos = state.reportPhotos || [];
   return `
     <div class="card">
       <h2>Laudo revisado ✓</h2>
@@ -679,6 +871,28 @@ function viewReportDone() {
       <p style="font-size:12px; color:var(--text-muted); margin-top:16px;">
         A assinatura digital (D4Sign) ainda não está conectada nesta versão — próximo passo do produto.
       </p>
+    </div>
+
+    <div class="card">
+      <h2>Fotos do laudo</h2>
+      <p class="subtitle">As fotos anexadas aparecem no PDF final, na seção "Registro Fotográfico"</p>
+      ${errorHtml()}
+      <form id="photoUploadForm">
+        <label>Adicionar foto (.jpg, .png — até 2MB cada)</label>
+        <input type="file" name="photos" accept="image/*" multiple>
+        <div style="margin-top:12px;"><button class="btn" type="submit">Enviar fotos</button></div>
+      </form>
+      ${photos.length > 0 ? `
+        <div class="row" style="margin-top:16px; flex-wrap:wrap;">
+          ${photos.map((p) => `
+            <div style="max-width:140px;">
+              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+              <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
+              <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p class="empty-state">Nenhuma foto anexada ainda.</p>`}
     </div>
   `;
 }
@@ -712,6 +926,9 @@ function bindAppForms() {
     newReportForm: handleCreateReport,
     generateForm: handleGenerate,
     reviewForm: handleReview,
+    importForm: handleImportDocument,
+    importReviewForm: handleImportReview,
+    photoUploadForm: handleUploadPhotos,
   };
   Object.entries(map).forEach(([id, handler]) => {
     const el = document.getElementById(id);
