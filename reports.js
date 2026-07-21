@@ -1,40 +1,69 @@
 const express = require("express");
 const multer = require("multer");
+const mammoth = require("mammoth");
+const pdfParse = require("pdf-parse");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const { checkPlanLimit } = require("../middleware/checkPlanLimit");
+const { generateTechnicalText, reviewImportedDocument } = require("../services/aiReportService");
+const { generateReportPdf } = require("../services/pdfService");
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
 router.use(requireAuth);
 
-// Limite de 2MB por foto — importante porque estamos guardando em base64
-// direto no Postgres (ver nota abaixo). Isso mantém o uso de espaço do
-// banco sob controle enquanto não migramos para um storage dedicado.
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
-});
+router.post("/", checkPlanLimit, async (req, res) => {
+  const { project_id, template_id, title, art_number, raw_input_json } = req.body;
 
-/**
- * NOTA IMPORTANTE SOBRE ARMAZENAMENTO:
- * As fotos são convertidas para base64 e guardadas diretamente na coluna
- * `url` da tabela `report_photos` (como uma data URI). Isso funciona bem
- * para volume baixo de testes, mas não escala bem — o plano gratuito do
- * Neon tem só 0,5 GB de armazenamento total, e fotos em base64 ocupam
- * ~33% a mais de espaço que o arquivo original. Antes de ter uso real
- * com muitos clientes, migrar para um storage de objetos (S3, R2,
- * Supabase Storage) e guardar só a URL aqui é o próximo passo natural.
- */
-
-// ---------------------------------------------------------------
-// POST /reports/:id/photos — envia uma ou mais fotos para o laudo
-// ---------------------------------------------------------------
-router.post("/:id/photos", upload.array("photos", 10), async (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: "Nenhuma foto enviada." });
+  if (!project_id || !template_id || !title) {
+    return res.status(400).json({ error: "project_id, template_id e title são obrigatórios." });
   }
 
   try {
-    // Confirma que o laudo pertence ao engenheiro autenticado
+    const result = await pool.query(
+      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'rascunho')
+       RETURNING *`,
+      [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao criar laudo." });
+  }
+});
+
+router.get("/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
+      [req.params.id, req.engineerId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao buscar laudo." });
+  }
+});
+
+router.post("/:id/generate", async (req, res) => {
+  const { observation, item_categories } = req.body;
+
+  if (!observation) {
+    return res.status(400).json({ error: "Campo 'observation' é obrigatório." });
+  }
+
+  if (observation.length > 600) {
+    return res.status(400).json({
+      error: "Observação muito longa para este campo (máximo 600 caracteres). Se você já tem um documento pronto, use a importação de documento (.docx/.pdf) em vez deste campo.",
+    });
+  }
+
+  try {
     const reportCheck = await pool.query(
       "SELECT id FROM reports WHERE id = $1 AND engineer_id = $2",
       [req.params.id, req.engineerId]
@@ -43,103 +72,184 @@ router.post("/:id/photos", upload.array("photos", 10), async (req, res) => {
       return res.status(404).json({ error: "Laudo não encontrado." });
     }
 
-    const captions = Array.isArray(req.body.captions) ? req.body.captions : [req.body.captions];
-    const inserted = [];
+    const aiResult = await generateTechnicalText(observation, item_categories || [], req.engineerId);
 
-    for (let i = 0; i < req.files.length; i++) {
-      const file = req.files[i];
-      const base64 = file.buffer.toString("base64");
-      const dataUri = `data:${file.mimetype};base64,${base64}`;
-      const caption = captions[i] || null;
+    const updated = await pool.query(
+      `UPDATE reports
+       SET generated_content_json = $1,
+           technical_opinion_json = $2,
+           norm_references = $3,
+           status = 'rascunho',
+           updated_at = now()
+       WHERE id = $4
+       RETURNING *`,
+      [
+        JSON.stringify({ text: aiResult.generatedText }),
+        JSON.stringify({ text: aiResult.technicalOpinion }),
+        aiResult.citedNormCode ? [aiResult.citedNormCode] : [],
+        req.params.id,
+      ]
+    );
 
-      const result = await pool.query(
-        `INSERT INTO report_photos (report_id, url, caption, display_order)
-         VALUES ($1, $2, $3, (SELECT COALESCE(MAX(display_order), -1) + 1 FROM report_photos WHERE report_id = $1))
-         RETURNING id, caption, display_order, created_at`,
-        [req.params.id, dataUri, caption]
-      );
-      inserted.push(result.rows[0]);
-    }
-
-    res.status(201).json(inserted);
+    res.json({ report: updated.rows[0], ai: aiResult });
   } catch (err) {
     console.error(err);
-    if (err.message && err.message.includes("File too large")) {
-      return res.status(400).json({ error: "Cada foto deve ter no máximo 2MB." });
-    }
-    res.status(500).json({ error: "Erro ao enviar fotos." });
+    res.status(500).json({ error: "Erro ao gerar texto com IA: " + err.message });
   }
 });
 
-// ---------------------------------------------------------------
-// GET /reports/:id/photos — lista as fotos do laudo (sem o base64
-// completo na listagem, só metadados, para não pesar a resposta)
-// ---------------------------------------------------------------
-router.get("/:id/photos", async (req, res) => {
+router.patch("/:id/review", async (req, res) => {
+  const { edited_text, edited_opinion } = req.body;
+
   try {
     const result = await pool.query(
-      `SELECT rp.id, rp.caption, rp.display_order, rp.created_at
-       FROM report_photos rp
-       JOIN reports r ON r.id = rp.report_id
-       WHERE rp.report_id = $1 AND r.engineer_id = $2
-       ORDER BY rp.display_order`,
+      `UPDATE reports
+       SET generated_content_json = jsonb_set(COALESCE(generated_content_json, '{}'::jsonb), '{text}', to_jsonb($1::text)),
+           technical_opinion_json = jsonb_set(COALESCE(technical_opinion_json, '{}'::jsonb), '{text}', to_jsonb($2::text)),
+           status = 'revisado',
+           updated_at = now()
+       WHERE id = $3 AND engineer_id = $4
+       RETURNING *`,
+      [edited_text, edited_opinion || "", req.params.id, req.engineerId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao revisar laudo." });
+  }
+});
+
+router.post("/:id/import", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "Nenhum arquivo enviado." });
+  }
+
+  try {
+    let rawText;
+    if (req.file.mimetype === "application/pdf") {
+      const data = await pdfParse(req.file.buffer);
+      rawText = data.text;
+    } else if (
+      req.file.mimetype ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
+      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+      rawText = result.value;
+    } else {
+      return res.status(400).json({ error: "Formato não suportado. Envie .docx ou .pdf." });
+    }
+
+    const templateResult = await pool.query(
+      "SELECT type FROM report_templates WHERE id = (SELECT template_id FROM reports WHERE id = $1)",
+      [req.params.id]
+    );
+    const templateType = templateResult.rows[0]?.type || "vistoria";
+    const review = await reviewImportedDocument(rawText, templateType);
+
+    const updated = await pool.query(
+      `UPDATE reports
+       SET source_type = 'documento_importado',
+           raw_input_json = $1,
+           generated_content_json = $2,
+           completeness_check_json = $3,
+           status = 'rascunho',
+           updated_at = now()
+       WHERE id = $4 AND engineer_id = $5
+       RETURNING *`,
+      [
+        JSON.stringify({ imported_raw_text: rawText }),
+        JSON.stringify({ text: review.corrected_text }),
+        JSON.stringify({ missing_items: review.missing_items, incomplete_items: review.incomplete_items }),
+        req.params.id,
+        req.engineerId,
+      ]
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+
+    res.json({ report: updated.rows[0], review });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao importar documento: " + err.message });
+  }
+});
+
+router.get("/:id/pdf", async (req, res) => {
+  try {
+    const reportResult = await pool.query(
+      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
       [req.params.id, req.engineerId]
+    );
+    if (reportResult.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+    const report = reportResult.rows[0];
+
+    const engineerResult = await pool.query(
+      "SELECT name, company_name, crea_number, crea_region, logo_url FROM engineers WHERE id = $1",
+      [req.engineerId]
+    );
+    const engineer = engineerResult.rows[0];
+
+    const projectResult = await pool.query(
+      `SELECT p.address, p.building_name, c.name AS client_name
+       FROM projects p JOIN clients c ON c.id = p.client_id
+       WHERE p.id = $1`,
+      [report.project_id]
+    );
+    const project = projectResult.rows[0] || {};
+
+    const photosResult = await pool.query(
+      "SELECT url, caption FROM report_photos WHERE report_id = $1 ORDER BY display_order",
+      [report.id]
+    );
+    const photos = photosResult.rows;
+
+    let norms = [];
+    if (report.norm_references && report.norm_references.length > 0) {
+      const normsResult = await pool.query(
+        "SELECT code, title FROM technical_norms WHERE code = ANY($1)",
+        [report.norm_references]
+      );
+      norms = normsResult.rows;
+    }
+
+    const pdfBuffer = await generateReportPdf({
+      engineer,
+      project: { address: project.address, building_name: project.building_name },
+      client: { name: project.client_name },
+      report,
+      norms,
+      photos,
+      photoCount: photos.length,
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="laudo-${report.id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao gerar PDF: " + err.message });
+  }
+});
+
+router.get("/", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, title, status, source_type, created_at FROM reports WHERE engineer_id = $1 ORDER BY created_at DESC",
+      [req.engineerId]
     );
     res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro ao listar fotos." });
-  }
-});
-
-// ---------------------------------------------------------------
-// GET /reports/:id/photos/:photoId — retorna a imagem em si (para
-// exibir como <img src="..."> no frontend)
-// ---------------------------------------------------------------
-router.get("/:id/photos/:photoId", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT rp.url FROM report_photos rp
-       JOIN reports r ON r.id = rp.report_id
-       WHERE rp.id = $1 AND rp.report_id = $2 AND r.engineer_id = $3`,
-      [req.params.photoId, req.params.id, req.engineerId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Foto não encontrada." });
-    }
-
-    const dataUri = result.rows[0].url;
-    const [meta, base64] = dataUri.split(",");
-    const mimeMatch = meta.match(/data:(.*);base64/);
-    const mimetype = mimeMatch ? mimeMatch[1] : "image/jpeg";
-
-    res.setHeader("Content-Type", mimetype);
-    res.send(Buffer.from(base64, "base64"));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao carregar foto." });
-  }
-});
-
-// ---------------------------------------------------------------
-// DELETE /reports/:id/photos/:photoId
-// ---------------------------------------------------------------
-router.delete("/:id/photos/:photoId", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `DELETE FROM report_photos
-       WHERE id = $1 AND report_id = $2
-       AND report_id IN (SELECT id FROM reports WHERE engineer_id = $3)
-       RETURNING id`,
-      [req.params.photoId, req.params.id, req.engineerId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Foto não encontrada." });
-    }
-    res.status(204).send();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao remover foto." });
+    res.status(500).json({ error: "Erro ao listar laudos." });
   }
 });
 
