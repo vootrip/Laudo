@@ -72,7 +72,7 @@ Responda APENAS em JSON, sem markdown, com o campo "generated_text".`;
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 250,
         system: systemPrompt,
         messages: [{ role: "user", content: `Observação: "${observation}"` }],
