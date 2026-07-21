@@ -4,16 +4,28 @@ const cors = require("cors");
 
 const authRoutes = require("./routes/auth");
 const reportRoutes = require("./routes/reports");
+const normRoutes = require("./routes/norms");
+const billingRoutes = require("./routes/billing");
+const publicRoutes = require("./routes/public");
 
 const app = express();
 
 app.use(cors());
+
+// IMPORTANTE: a rota de webhook do Stripe precisa vir ANTES do
+// express.json() global, porque ela exige o corpo bruto (raw body)
+// para validar a assinatura do Stripe corretamente. Por isso ela é
+// registrada separadamente aqui, antes do parser JSON padrão.
+app.use("/billing", billingRoutes);
+
 app.use(express.json());
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 app.use("/auth", authRoutes);
 app.use("/reports", reportRoutes);
+app.use("/norms", normRoutes);
+app.use("/public", publicRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);
