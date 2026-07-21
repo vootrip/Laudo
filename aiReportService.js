@@ -9,6 +9,19 @@ const ITEM_CATEGORY_TO_NORM_SCOPE = {
   conclusao_obra: ["conclusao_obra"],
 };
 
+/**
+ * Busca normas candidatas combinando duas fontes de sinal:
+ *  1. A categoria do item vistoriado (regra fixa, como já existia)
+ *  2. Palavras-chave da norma que aparecem no texto da observação
+ *     (novo — melhora a precisão quando o engenheiro descreve algo
+ *     que a categoria sozinha não captura, ex: "infiltração" mencionada
+ *     dentro de um item categorizado só como "paredes")
+ *
+ * Inclui tanto as normas padrão do sistema (engineer_id IS NULL) quanto
+ * as normas customizadas do próprio escritório do engenheiro.
+ *
+ * Retorna as normas ordenadas por relevância (score), não apenas por código.
+ */
 async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
   const scopes = new Set();
   for (const category of itemCategories) {
@@ -28,6 +41,10 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   const observationLower = (rawObservation || "").toLowerCase();
 
+  // Score simples: +1 por categoria batida (já filtrado acima) e
+  // +2 por cada palavra-chave da norma encontrada literalmente no texto
+  // da observação. Isso prioriza normas cujo vocabulário bate com o que
+  // o engenheiro realmente escreveu, em vez de só a categoria genérica.
   const scored = rows.map((norm) => {
     const keywordHits = (norm.keywords || []).filter((kw) =>
       observationLower.includes(kw.toLowerCase())
@@ -43,6 +60,8 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   scored.sort((a, b) => b.score - a.score);
 
+  // Limita a no máximo 4 candidatas para não poluir o prompt e não
+  // dar à IA opções demais entre as quais ela poderia errar a escolha
   return scored.slice(0, 4);
 }
 
@@ -54,28 +73,44 @@ function buildSystemPrompt(candidateNorms) {
   return `Você é um assistente de redação técnica para laudos de engenharia civil.
 
 Sua tarefa é reformular a observação do engenheiro em linguagem técnica formal,
-seguindo estas regras obrigatórias:
+seguindo estas regras obrigatórias e inegociáveis:
 
 1. Use APENAS os fatos mencionados pelo engenheiro. Nunca adicione gravidade,
    causa, risco ou conclusão que ele não tenha escrito.
-2. Reformule o vocabulário coloquial em terminologia técnica de engenharia civil.
-3. Dentre as normas abaixo (já pré-selecionadas e ordenadas por relevância ao
+2. NUNCA invente medidas, ângulos, percentuais, prazos, datas, materiais de
+   reparo, métodos de execução ou recomendações técnicas específicas que não
+   tenham sido explicitamente informados pelo engenheiro. Se ele não disse o
+   tamanho da fissura, você não estima um tamanho. Se ele não recomendou um
+   reparo, você não recomenda um método de reparo.
+3. O nível de detalhe da sua reformulação deve ser proporcional ao nível de
+   detalhe da observação original. Uma observação curta e vaga (ex: uma ou
+   duas palavras) deve gerar um texto igualmente curto e vago — reformulado
+   em linguagem técnica, mas sem expandir o conteúdo para parecer mais
+   completo do que realmente é. Nunca "compense" a falta de informação do
+   engenheiro com elaboração própria.
+4. Dentre as normas abaixo (já pré-selecionadas e ordenadas por relevância ao
    texto), escolha no máximo 1 que seja pertinente ao trecho, e cite apenas o
    código e título dela — nunca cite ou repita conteúdo do texto integral da
    norma, pois isso não está disponível para você. Se nenhuma norma listada
    for de fato pertinente, não cite nenhuma — não force uma citação só porque
    havia candidatas na lista.
-4. Se não tiver certeza sobre um fato, mantenha a redação tão vaga quanto a
+5. Se não tiver certeza sobre um fato, mantenha a redação tão vaga quanto a
    observação original — não preencha lacunas.
 
 Normas candidatas para este laudo, da mais para a menos relevante:
 ${normsList}
 
 Responda APENAS em JSON válido, sem markdown e sem texto fora do JSON, com os
-campos: "generated_text" e "cited_norm_code" (ou null se nenhuma norma se
-aplicar). Se o texto gerado contiver aspas duplas, escape-as corretamente
-(\\") para manter o JSON válido. Não use quebras de linha literais dentro do
-valor de "generated_text" — use espaços no lugar.`;
+campos:
+- "generated_text": o texto reformulado, proporcional em detalhe ao que foi informado
+- "cited_norm_code": código da norma citada, ou null
+- "insufficient_detail": true se a observação original for vaga demais para
+  compor uma descrição técnica útil (ex: menos de uma frase completa, sem
+  nenhum detalhe concreto sobre o que foi observado), false caso contrário
+
+Se o texto gerado contiver aspas duplas, escape-as corretamente (\\") para
+manter o JSON válido. Não use quebras de linha literais dentro do valor de
+"generated_text" — use espaços no lugar.`;
 }
 
 async function generateTechnicalText(rawObservation, itemCategories, engineerId) {
@@ -110,6 +145,9 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
   try {
     parsed = JSON.parse(rawText);
   } catch (err) {
+    // A IA ocasionalmente gera JSON malformado (ex: aspas não escapadas
+    // dentro do texto). Em vez de falhar por completo, extraímos o texto
+    // gerado por regex como plano B, mantendo a experiência funcional.
     const match = rawText.match(/"generated_text"\s*:\s*"([\s\S]*?)"\s*,\s*"cited_norm_code"/);
     if (match) {
       parsed = {
@@ -117,6 +155,7 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
         cited_norm_code: null,
       };
     } else {
+      // Último recurso: usa o texto bruto retornado pela IA, sem formatação JSON
       parsed = { generated_text: rawText, cited_norm_code: null };
     }
   }
@@ -124,6 +163,7 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
   return {
     generatedText: parsed.generated_text,
     citedNormCode: parsed.cited_norm_code,
+    insufficientDetail: parsed.insufficient_detail === true,
     candidateNormsConsidered: candidateNorms.map((n) => ({
       code: n.code,
       score: n.score,

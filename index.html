@@ -653,6 +653,7 @@ function viewReportReview() {
     <div class="card">
       <h2>Revisar texto do laudo</h2>
       ${errorHtml()}
+      ${ai && ai.insufficientDetail ? `<div class="error-box">⚠ A observação original foi muito vaga. O texto abaixo permaneceu igualmente genérico de propósito — a IA não deve preencher lacunas com suposições. Considere voltar e descrever a observação com mais detalhe antes de confirmar.</div>` : ""}
       ${ai && ai.citedNormCode ? `<div class="info-box">Norma citada: ${ai.citedNormCode}</div>` : ""}
       <form id="reviewForm">
         <label>Texto técnico (editável antes de confirmar)</label>
