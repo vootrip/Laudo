@@ -4,7 +4,9 @@ const mammoth = require("mammoth");
 const pdfParse = require("pdf-parse");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const { checkPlanLimit } = require("../middleware/checkPlanLimit");
 const { generateTechnicalText } = require("../services/aiReportService");
+const { generateReportPdf } = require("../services/pdfService");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -14,8 +16,11 @@ router.use(requireAuth);
 
 // ---------------------------------------------------------------
 // POST /reports — cria um laudo em rascunho (fluxo do formulário)
+// Passa primeiro por checkPlanLimit: se o engenheiro já usou todos
+// os laudos disponíveis no plano atual, a criação é bloqueada com
+// status 402 e o frontend deve redirecionar para a tela de planos.
 // ---------------------------------------------------------------
-router.post("/", async (req, res) => {
+router.post("/", checkPlanLimit, async (req, res) => {
   const { project_id, template_id, title, raw_input_json } = req.body;
 
   if (!project_id || !template_id || !title) {
@@ -75,7 +80,7 @@ router.post("/:id/generate", async (req, res) => {
       return res.status(404).json({ error: "Laudo não encontrado." });
     }
 
-    const aiResult = await generateTechnicalText(observation, item_categories || []);
+    const aiResult = await generateTechnicalText(observation, item_categories || [], req.engineerId);
 
     const updated = await pool.query(
       `UPDATE reports
@@ -179,8 +184,67 @@ router.post("/:id/import", upload.single("file"), async (req, res) => {
 });
 
 // ---------------------------------------------------------------
-// GET /reports — lista os laudos do engenheiro autenticado
+// GET /reports/:id/pdf — gera o PDF final do laudo, com a
+// identidade visual do escritório (logo, nome, CREA), e devolve
+// o arquivo para download.
 // ---------------------------------------------------------------
+router.get("/:id/pdf", async (req, res) => {
+  try {
+    const reportResult = await pool.query(
+      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
+      [req.params.id, req.engineerId]
+    );
+    if (reportResult.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+    const report = reportResult.rows[0];
+
+    const engineerResult = await pool.query(
+      "SELECT name, company_name, crea_number, crea_region, logo_url FROM engineers WHERE id = $1",
+      [req.engineerId]
+    );
+    const engineer = engineerResult.rows[0];
+
+    const projectResult = await pool.query(
+      `SELECT p.address, c.name AS client_name
+       FROM projects p JOIN clients c ON c.id = p.client_id
+       WHERE p.id = $1`,
+      [report.project_id]
+    );
+    const project = projectResult.rows[0] || {};
+
+    let norms = [];
+    if (report.norm_references && report.norm_references.length > 0) {
+      const normsResult = await pool.query(
+        "SELECT code, title FROM technical_norms WHERE code = ANY($1)",
+        [report.norm_references]
+      );
+      norms = normsResult.rows;
+    }
+
+    // Nota: se o engenheiro tiver logo_url cadastrada, o ideal é baixar
+    // a imagem aqui (fetch + arrayBuffer) e passar como engineer.logo_buffer
+    // antes de gerar o PDF. Deixado como próximo passo — depende de qual
+    // storage (S3/R2) for usado para hospedar o arquivo da logo.
+
+    const pdfBuffer = await generateReportPdf({
+      engineer,
+      project: { address: project.address },
+      client: { name: project.client_name },
+      report,
+      norms,
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="laudo-${report.id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao gerar PDF: " + err.message });
+  }
+});
+
+
 router.get("/", async (req, res) => {
   try {
     const result = await pool.query(

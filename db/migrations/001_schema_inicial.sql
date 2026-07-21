@@ -127,14 +127,21 @@ CREATE INDEX idx_report_photos_report ON report_photos(report_id);
 CREATE TABLE signatures (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     report_id           UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-    provider            VARCHAR(50) NOT NULL, -- clicksign|d4sign|govbr
-    provider_document_id VARCHAR(255),
-    govbr_trust_level   VARCHAR(20), -- bronze|prata|ouro (aplica-se somente quando provider = 'govbr')
+    provider            VARCHAR(50) NOT NULL, -- clicksign|d4sign|externo_manual
+    provider_document_id VARCHAR(255), -- nulo quando provider = 'externo_manual'
     signature_status    VARCHAR(50) NOT NULL DEFAULT 'pendente', -- pendente|assinado|recusado
     signed_pdf_url      TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at        TIMESTAMPTZ
 );
+
+-- Nota sobre 'externo_manual': usado quando o engenheiro opta por assinar
+-- o laudo fora do sistema (ex: PDF baixado e assinado via assinador.iti.br
+-- com conta gov.br, gratuitamente) e depois faz upload do PDF já assinado
+-- de volta. Não existe integração automática de API com serviços gov.br —
+-- o catálogo oficial (Conecta gov.br) não oferece essa API para iniciativa
+-- privada. Esse campo só registra que a assinatura veio de fora, mantendo
+-- o arquivo final arquivado junto do laudo.
 
 CREATE INDEX idx_signatures_report ON signatures(report_id);
 

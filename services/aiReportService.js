@@ -9,7 +9,20 @@ const ITEM_CATEGORY_TO_NORM_SCOPE = {
   conclusao_obra: ["conclusao_obra"],
 };
 
-async function getCandidateNorms(itemCategories) {
+/**
+ * Busca normas candidatas combinando duas fontes de sinal:
+ *  1. A categoria do item vistoriado (regra fixa, como já existia)
+ *  2. Palavras-chave da norma que aparecem no texto da observação
+ *     (novo — melhora a precisão quando o engenheiro descreve algo
+ *     que a categoria sozinha não captura, ex: "infiltração" mencionada
+ *     dentro de um item categorizado só como "paredes")
+ *
+ * Inclui tanto as normas padrão do sistema (engineer_id IS NULL) quanto
+ * as normas customizadas do próprio escritório do engenheiro.
+ *
+ * Retorna as normas ordenadas por relevância (score), não apenas por código.
+ */
+async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
   const scopes = new Set();
   for (const category of itemCategories) {
     const mapped = ITEM_CATEGORY_TO_NORM_SCOPE[category] || ["vistoria"];
@@ -17,14 +30,39 @@ async function getCandidateNorms(itemCategories) {
   }
 
   const { rows } = await pool.query(
-    `SELECT code, title, scope_summary
+    `SELECT code, title, scope_summary, keywords
      FROM technical_norms
-     WHERE applies_to = ANY($1) AND status = 'vigente'
+     WHERE (applies_to = ANY($1) OR engineer_id = $2)
+       AND status = 'vigente'
+       AND (engineer_id IS NULL OR engineer_id = $2)
      ORDER BY code`,
-    [Array.from(scopes)]
+    [Array.from(scopes), engineerId]
   );
 
-  return rows;
+  const observationLower = (rawObservation || "").toLowerCase();
+
+  // Score simples: +1 por categoria batida (já filtrado acima) e
+  // +2 por cada palavra-chave da norma encontrada literalmente no texto
+  // da observação. Isso prioriza normas cujo vocabulário bate com o que
+  // o engenheiro realmente escreveu, em vez de só a categoria genérica.
+  const scored = rows.map((norm) => {
+    const keywordHits = (norm.keywords || []).filter((kw) =>
+      observationLower.includes(kw.toLowerCase())
+    );
+    return {
+      code: norm.code,
+      title: norm.title,
+      scope_summary: norm.scope_summary,
+      score: 1 + keywordHits.length * 2,
+      matchedKeywords: keywordHits,
+    };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // Limita a no máximo 4 candidatas para não poluir o prompt e não
+  // dar à IA opções demais entre as quais ela poderia errar a escolha
+  return scored.slice(0, 4);
 }
 
 function buildSystemPrompt(candidateNorms) {
@@ -40,22 +78,24 @@ seguindo estas regras obrigatórias:
 1. Use APENAS os fatos mencionados pelo engenheiro. Nunca adicione gravidade,
    causa, risco ou conclusão que ele não tenha escrito.
 2. Reformule o vocabulário coloquial em terminologia técnica de engenharia civil.
-3. Dentre as normas abaixo, escolha no máximo 1 que seja pertinente ao trecho,
-   e cite apenas o código e título dela — nunca cite ou repita conteúdo do
-   texto integral da norma, pois isso não está disponível para você.
-   Se nenhuma norma listada for pertinente, não cite nenhuma.
+3. Dentre as normas abaixo (já pré-selecionadas e ordenadas por relevância ao
+   texto), escolha no máximo 1 que seja pertinente ao trecho, e cite apenas o
+   código e título dela — nunca cite ou repita conteúdo do texto integral da
+   norma, pois isso não está disponível para você. Se nenhuma norma listada
+   for de fato pertinente, não cite nenhuma — não force uma citação só porque
+   havia candidatas na lista.
 4. Se não tiver certeza sobre um fato, mantenha a redação tão vaga quanto a
    observação original — não preencha lacunas.
 
-Normas candidatas para este laudo:
+Normas candidatas para este laudo, da mais para a menos relevante:
 ${normsList}
 
 Responda APENAS em JSON, sem markdown, com os campos: "generated_text" e
 "cited_norm_code" (ou null se nenhuma norma se aplicar).`;
 }
 
-async function generateTechnicalText(rawObservation, itemCategories) {
-  const candidateNorms = await getCandidateNorms(itemCategories);
+async function generateTechnicalText(rawObservation, itemCategories, engineerId) {
+  const candidateNorms = await getCandidateNorms(itemCategories, rawObservation, engineerId);
   const systemPrompt = buildSystemPrompt(candidateNorms);
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -85,7 +125,11 @@ async function generateTechnicalText(rawObservation, itemCategories) {
   return {
     generatedText: parsed.generated_text,
     citedNormCode: parsed.cited_norm_code,
-    candidateNormsConsidered: candidateNorms.map((n) => n.code),
+    candidateNormsConsidered: candidateNorms.map((n) => ({
+      code: n.code,
+      score: n.score,
+      matchedKeywords: n.matchedKeywords,
+    })),
   };
 }
 
