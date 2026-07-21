@@ -24,15 +24,15 @@ router.get("/", async (req, res) => {
 
 // POST /projects — cria um novo projeto vinculado a um cliente existente
 router.post("/", async (req, res) => {
-  const { client_id, address, project_type } = req.body;
+  const { client_id, address, project_type, building_name } = req.body;
   if (!client_id || !address || !project_type) {
     return res.status(400).json({ error: "client_id, address e project_type são obrigatórios." });
   }
   try {
     const result = await pool.query(
-      `INSERT INTO projects (engineer_id, client_id, address, project_type)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [req.engineerId, client_id, address, project_type]
+      `INSERT INTO projects (engineer_id, client_id, address, project_type, building_name)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [req.engineerId, client_id, address, project_type, building_name || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {

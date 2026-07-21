@@ -5,7 +5,7 @@ const pdfParse = require("pdf-parse");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { checkPlanLimit } = require("../middleware/checkPlanLimit");
-const { generateTechnicalText } = require("../services/aiReportService");
+const { generateTechnicalText, reviewImportedDocument } = require("../services/aiReportService");
 const { generateReportPdf } = require("../services/pdfService");
 
 const router = express.Router();
@@ -21,7 +21,7 @@ router.use(requireAuth);
 // status 402 e o frontend deve redirecionar para a tela de planos.
 // ---------------------------------------------------------------
 router.post("/", checkPlanLimit, async (req, res) => {
-  const { project_id, template_id, title, raw_input_json } = req.body;
+  const { project_id, template_id, title, art_number, raw_input_json } = req.body;
 
   if (!project_id || !template_id || !title) {
     return res.status(400).json({ error: "project_id, template_id e title são obrigatórios." });
@@ -29,10 +29,10 @@ router.post("/", checkPlanLimit, async (req, res) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO reports (engineer_id, project_id, template_id, title, raw_input_json, status)
-       VALUES ($1, $2, $3, $4, $5, 'rascunho')
+      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'rascunho')
        RETURNING *`,
-      [req.engineerId, project_id, template_id, title, raw_input_json || {}]
+      [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -71,6 +71,12 @@ router.post("/:id/generate", async (req, res) => {
     return res.status(400).json({ error: "Campo 'observation' é obrigatório." });
   }
 
+  if (observation.length > 600) {
+    return res.status(400).json({
+      error: "Observação muito longa para este campo (máximo 600 caracteres). Se você já tem um documento pronto, use a importação de documento (.docx/.pdf) em vez deste campo.",
+    });
+  }
+
   try {
     const reportCheck = await pool.query(
       "SELECT id FROM reports WHERE id = $1 AND engineer_id = $2",
@@ -85,13 +91,15 @@ router.post("/:id/generate", async (req, res) => {
     const updated = await pool.query(
       `UPDATE reports
        SET generated_content_json = $1,
-           norm_references = $2,
+           technical_opinion_json = $2,
+           norm_references = $3,
            status = 'rascunho',
            updated_at = now()
-       WHERE id = $3
+       WHERE id = $4
        RETURNING *`,
       [
         JSON.stringify({ text: aiResult.generatedText }),
+        JSON.stringify({ text: aiResult.technicalOpinion }),
         aiResult.citedNormCode ? [aiResult.citedNormCode] : [],
         req.params.id,
       ]
@@ -109,17 +117,18 @@ router.post("/:id/generate", async (req, res) => {
 // (fica registrado como revisão manual)
 // ---------------------------------------------------------------
 router.patch("/:id/review", async (req, res) => {
-  const { edited_text } = req.body;
+  const { edited_text, edited_opinion } = req.body;
 
   try {
     const result = await pool.query(
       `UPDATE reports
-       SET generated_content_json = jsonb_set(generated_content_json, '{text}', to_jsonb($1::text)),
+       SET generated_content_json = jsonb_set(COALESCE(generated_content_json, '{}'::jsonb), '{text}', to_jsonb($1::text)),
+           technical_opinion_json = jsonb_set(COALESCE(technical_opinion_json, '{}'::jsonb), '{text}', to_jsonb($2::text)),
            status = 'revisado',
            updated_at = now()
-       WHERE id = $2 AND engineer_id = $3
+       WHERE id = $3 AND engineer_id = $4
        RETURNING *`,
-      [edited_text, req.params.id, req.engineerId]
+      [edited_text, edited_opinion || "", req.params.id, req.engineerId]
     );
 
     if (result.rows.length === 0) {
@@ -157,26 +166,68 @@ router.post("/:id/import", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Formato não suportado. Envie .docx ou .pdf." });
     }
 
-    // Nota: o upload do arquivo original para um storage (S3/R2) e a
-    // chamada de revisão via IA seguem a mesma lógica já desenhada em
-    // integracao_import_documento.js — aqui deixamos o texto extraído
-    // salvo como entrada bruta para a etapa seguinte de revisão.
+    // Trava importante: se a extração não encontrou nenhum texto de verdade
+    // (arquivo baseado em imagem/scan, tabelas/caixas de texto que o mammoth
+    // não lê, ou arquivo corrompido), paramos aqui com um erro claro em vez
+    // de seguir adiante e gerar um "texto corrigido" vazio silenciosamente.
+    if (!rawText || rawText.trim().length < 20) {
+      return res.status(400).json({
+        error: "Não foi possível extrair texto legível deste arquivo. Verifique se o documento não é uma imagem escaneada, e se o conteúdo está em parágrafos normais (não só em tabelas ou caixas de texto).",
+      });
+    }
+
+    // Chama a IA no papel de REVISOR (não gerador): corrige gramática e
+    // aponta o que falta, sem reescrever ou resumir o conteúdo original.
+    const templateResult = await pool.query(
+      "SELECT type FROM report_templates WHERE id = (SELECT template_id FROM reports WHERE id = $1)",
+      [req.params.id]
+    );
+    const templateType = templateResult.rows[0]?.type || "vistoria";
+    const review = await reviewImportedDocument(rawText, templateType);
+
+    // Guarda o arquivo original em base64 (mesmo padrão pragmático usado
+    // para fotos — ver ressalva sobre limite de armazenamento do Neon
+    // em routes/photos.js). Isso preenche a coluna original_document_url
+    // que já existia no schema, mas nunca era usada até agora.
+    const originalBase64 = req.file.buffer.toString("base64");
+    const originalDataUri = `data:${req.file.mimetype};base64,${originalBase64}`;
+
+    // O fluxo de importação não gera uma observação nova para basear um
+    // parecer técnico elaborado (isso é papel do fluxo de formulário) —
+    // mas preenchemos um parecer mínimo e honesto, em vez de deixar a
+    // seção 4 do PDF em branco/genérica demais.
+    const minimalOpinion = review.missing_items && review.missing_items.length > 0
+      ? `Documento revisado quanto à gramática e terminologia. Itens pendentes de complementação: ${review.missing_items.join(", ")}.`
+      : "Documento revisado quanto à gramática e terminologia, sem pendências de completude identificadas.";
+
     const updated = await pool.query(
       `UPDATE reports
        SET source_type = 'documento_importado',
            raw_input_json = $1,
+           generated_content_json = $2,
+           technical_opinion_json = $3,
+           completeness_check_json = $4,
+           original_document_url = $5,
            status = 'rascunho',
            updated_at = now()
-       WHERE id = $2 AND engineer_id = $3
+       WHERE id = $6 AND engineer_id = $7
        RETURNING *`,
-      [JSON.stringify({ imported_raw_text: rawText }), req.params.id, req.engineerId]
+      [
+        JSON.stringify({ imported_raw_text: rawText }),
+        JSON.stringify({ text: review.corrected_text }),
+        JSON.stringify({ text: minimalOpinion }),
+        JSON.stringify({ missing_items: review.missing_items, incomplete_items: review.incomplete_items }),
+        originalDataUri,
+        req.params.id,
+        req.engineerId,
+      ]
     );
 
     if (updated.rows.length === 0) {
       return res.status(404).json({ error: "Laudo não encontrado." });
     }
 
-    res.json({ report: updated.rows[0], extractedText: rawText });
+    res.json({ report: updated.rows[0], review });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao importar documento: " + err.message });
@@ -206,12 +257,18 @@ router.get("/:id/pdf", async (req, res) => {
     const engineer = engineerResult.rows[0];
 
     const projectResult = await pool.query(
-      `SELECT p.address, c.name AS client_name
+      `SELECT p.address, p.building_name, c.name AS client_name
        FROM projects p JOIN clients c ON c.id = p.client_id
        WHERE p.id = $1`,
       [report.project_id]
     );
     const project = projectResult.rows[0] || {};
+
+    const photosResult = await pool.query(
+      "SELECT url, caption FROM report_photos WHERE report_id = $1 ORDER BY display_order",
+      [report.id]
+    );
+    const photos = photosResult.rows;
 
     let norms = [];
     if (report.norm_references && report.norm_references.length > 0) {
@@ -229,10 +286,12 @@ router.get("/:id/pdf", async (req, res) => {
 
     const pdfBuffer = await generateReportPdf({
       engineer,
-      project: { address: project.address },
+      project: { address: project.address, building_name: project.building_name },
       client: { name: project.client_name },
       report,
       norms,
+      photos,
+      photoCount: photos.length,
     });
 
     res.setHeader("Content-Type", "application/pdf");
