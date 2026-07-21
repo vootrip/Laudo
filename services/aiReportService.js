@@ -9,19 +9,6 @@ const ITEM_CATEGORY_TO_NORM_SCOPE = {
   conclusao_obra: ["conclusao_obra"],
 };
 
-/**
- * Busca normas candidatas combinando duas fontes de sinal:
- *  1. A categoria do item vistoriado (regra fixa, como já existia)
- *  2. Palavras-chave da norma que aparecem no texto da observação
- *     (novo — melhora a precisão quando o engenheiro descreve algo
- *     que a categoria sozinha não captura, ex: "infiltração" mencionada
- *     dentro de um item categorizado só como "paredes")
- *
- * Inclui tanto as normas padrão do sistema (engineer_id IS NULL) quanto
- * as normas customizadas do próprio escritório do engenheiro.
- *
- * Retorna as normas ordenadas por relevância (score), não apenas por código.
- */
 async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
   const scopes = new Set();
   for (const category of itemCategories) {
@@ -41,10 +28,6 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   const observationLower = (rawObservation || "").toLowerCase();
 
-  // Score simples: +1 por categoria batida (já filtrado acima) e
-  // +2 por cada palavra-chave da norma encontrada literalmente no texto
-  // da observação. Isso prioriza normas cujo vocabulário bate com o que
-  // o engenheiro realmente escreveu, em vez de só a categoria genérica.
   const scored = rows.map((norm) => {
     const keywordHits = (norm.keywords || []).filter((kw) =>
       observationLower.includes(kw.toLowerCase())
@@ -60,8 +43,6 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   scored.sort((a, b) => b.score - a.score);
 
-  // Limita a no máximo 4 candidatas para não poluir o prompt e não
-  // dar à IA opções demais entre as quais ela poderia errar a escolha
   return scored.slice(0, 4);
 }
 
@@ -90,8 +71,11 @@ seguindo estas regras obrigatórias:
 Normas candidatas para este laudo, da mais para a menos relevante:
 ${normsList}
 
-Responda APENAS em JSON, sem markdown, com os campos: "generated_text" e
-"cited_norm_code" (ou null se nenhuma norma se aplicar).`;
+Responda APENAS em JSON válido, sem markdown e sem texto fora do JSON, com os
+campos: "generated_text" e "cited_norm_code" (ou null se nenhuma norma se
+aplicar). Se o texto gerado contiver aspas duplas, escape-as corretamente
+(\\") para manter o JSON válido. Não use quebras de linha literais dentro do
+valor de "generated_text" — use espaços no lugar.`;
 }
 
 async function generateTechnicalText(rawObservation, itemCategories, engineerId) {
@@ -106,8 +90,8 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 500,
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
       system: systemPrompt,
       messages: [{ role: "user", content: `Observação do engenheiro: "${rawObservation}"` }],
     }),
@@ -120,7 +104,22 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
 
   const data = await response.json();
   const textBlock = data.content.find((c) => c.type === "text");
-  const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, "").trim());
+  const rawText = textBlock.text.replace(/```json|```/g, "").trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err) {
+    const match = rawText.match(/"generated_text"\s*:\s*"([\s\S]*?)"\s*,\s*"cited_norm_code"/);
+    if (match) {
+      parsed = {
+        generated_text: match[1].replace(/\\"/g, '"').replace(/\\n/g, "\n"),
+        cited_norm_code: null,
+      };
+    } else {
+      parsed = { generated_text: rawText, cited_norm_code: null };
+    }
+  }
 
   return {
     generatedText: parsed.generated_text,
