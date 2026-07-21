@@ -9,19 +9,6 @@ const ITEM_CATEGORY_TO_NORM_SCOPE = {
   conclusao_obra: ["conclusao_obra"],
 };
 
-/**
- * Busca normas candidatas combinando duas fontes de sinal:
- *  1. A categoria do item vistoriado (regra fixa, como já existia)
- *  2. Palavras-chave da norma que aparecem no texto da observação
- *     (novo — melhora a precisão quando o engenheiro descreve algo
- *     que a categoria sozinha não captura, ex: "infiltração" mencionada
- *     dentro de um item categorizado só como "paredes")
- *
- * Inclui tanto as normas padrão do sistema (engineer_id IS NULL) quanto
- * as normas customizadas do próprio escritório do engenheiro.
- *
- * Retorna as normas ordenadas por relevância (score), não apenas por código.
- */
 async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
   const scopes = new Set();
   for (const category of itemCategories) {
@@ -41,10 +28,6 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   const observationLower = (rawObservation || "").toLowerCase();
 
-  // Score simples: +1 por categoria batida (já filtrado acima) e
-  // +2 por cada palavra-chave da norma encontrada literalmente no texto
-  // da observação. Isso prioriza normas cujo vocabulário bate com o que
-  // o engenheiro realmente escreveu, em vez de só a categoria genérica.
   const scored = rows.map((norm) => {
     const keywordHits = (norm.keywords || []).filter((kw) =>
       observationLower.includes(kw.toLowerCase())
@@ -60,8 +43,6 @@ async function getCandidateNorms(itemCategories, rawObservation, engineerId) {
 
   scored.sort((a, b) => b.score - a.score);
 
-  // Limita a no máximo 4 candidatas para não poluir o prompt e não
-  // dar à IA opções demais entre as quais ela poderia errar a escolha
   return scored.slice(0, 4);
 }
 
@@ -129,9 +110,6 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
   try {
     parsed = JSON.parse(rawText);
   } catch (err) {
-    // A IA ocasionalmente gera JSON malformado (ex: aspas não escapadas
-    // dentro do texto). Em vez de falhar por completo, extraímos o texto
-    // gerado por regex como plano B, mantendo a experiência funcional.
     const match = rawText.match(/"generated_text"\s*:\s*"([\s\S]*?)"\s*,\s*"cited_norm_code"/);
     if (match) {
       parsed = {
@@ -139,7 +117,6 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
         cited_norm_code: null,
       };
     } else {
-      // Último recurso: usa o texto bruto retornado pela IA, sem formatação JSON
       parsed = { generated_text: rawText, cited_norm_code: null };
     }
   }
