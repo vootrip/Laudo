@@ -85,7 +85,9 @@ curl -X POST http://localhost:3000/reports/ID_DO_LAUDO/generate \
 
 ## Sobre o modelo de IA usado
 
-O código usa `claude-sonnet-4-6` como exemplo. Antes de rodar em produção,
-vale conferir em https://docs.claude.com qual modelo tem a melhor relação
-custo-benefício para essa tarefa — como discutimos antes, um modelo mais
-leve provavelmente já é suficiente e mais barato para reformulação de texto.
+O código usa `claude-haiku-4-5-20251001`, o modelo mais econômico disponível
+no momento em que este projeto foi criado (julho de 2026) — adequado para
+uma tarefa de reformulação de texto, que não exige o modelo mais potente.
+Antes de rodar em produção, confira em https://docs.claude.com se esse
+continua sendo o modelo com melhor relação custo-benefício, ou se um mais
+recente já está disponível.
