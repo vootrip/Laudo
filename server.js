@@ -7,6 +7,9 @@ const reportRoutes = require("./routes/reports");
 const normRoutes = require("./routes/norms");
 const billingRoutes = require("./routes/billing");
 const publicRoutes = require("./routes/public");
+const clientRoutes = require("./routes/clients");
+const projectRoutes = require("./routes/projects");
+const templateRoutes = require("./routes/templates");
 
 const app = express();
 
@@ -26,6 +29,9 @@ app.use("/auth", authRoutes);
 app.use("/reports", reportRoutes);
 app.use("/norms", normRoutes);
 app.use("/public", publicRoutes);
+app.use("/clients", clientRoutes);
+app.use("/projects", projectRoutes);
+app.use("/templates", templateRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);
