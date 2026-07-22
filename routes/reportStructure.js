@@ -3,6 +3,7 @@ const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { assertEditable } = require("../middleware/reportGuards");
 const { createNewVersion } = require("../services/reportVersionService");
+const { checkPlanLimit } = require("../middleware/checkPlanLimit");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -675,6 +676,102 @@ router.get("/:id/versions/:versionId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao buscar versão." });
+  }
+});
+
+// =================================================================
+// DUPLICAR LAUDO — usa um laudo anterior como ponto de partida
+// =================================================================
+
+// POST /reports/:id/duplicate — cria um novo laudo em rascunho,
+// copiando seções/subseções/normas vinculadas/estimativa de custo
+// do laudo original. Não copia fotos (são específicas do imóvel
+// vistoriado) nem o histórico de versões/assinatura.
+router.post("/:id/duplicate", checkPlanLimit, async (req, res) => {
+  const { title } = req.body;
+  const client = await pool.connect();
+  try {
+    const original = await pool.query(
+      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
+      [req.params.id, req.engineerId]
+    );
+    if (original.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo original não encontrado." });
+    }
+    const source = original.rows[0];
+
+    await client.query("BEGIN");
+
+    const newReportResult = await client.query(
+      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, process_id, status)
+       VALUES ($1, $2, $3, $4, NULL, $5, $6, 'rascunho')
+       RETURNING *`,
+      [
+        req.engineerId,
+        source.project_id,
+        source.template_id,
+        title || `${source.title} (cópia)`,
+        source.raw_input_json || {},
+        source.process_id,
+      ]
+    );
+    const newReport = newReportResult.rows[0];
+
+    const sections = await client.query(
+      "SELECT * FROM report_sections WHERE report_id = $1 ORDER BY order_index",
+      [req.params.id]
+    );
+    for (const section of sections.rows) {
+      const newSection = await client.query(
+        `INSERT INTO report_sections (report_id, section_number, section_title, content_text, order_index)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [newReport.id, section.section_number, section.section_title, section.content_text, section.order_index]
+      );
+      const subsections = await client.query(
+        "SELECT * FROM report_subsections WHERE section_id = $1 ORDER BY order_index",
+        [section.id]
+      );
+      for (const sub of subsections.rows) {
+        await client.query(
+          `INSERT INTO report_subsections (section_id, subsection_number, subsection_title, content_text, order_index)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [newSection.rows[0].id, sub.subsection_number, sub.subsection_title, sub.content_text, sub.order_index]
+        );
+      }
+    }
+
+    const normLinks = await client.query(
+      "SELECT * FROM report_norm_links WHERE report_id = $1 ORDER BY order_index",
+      [req.params.id]
+    );
+    for (const link of normLinks.rows) {
+      await client.query(
+        `INSERT INTO report_norm_links (report_id, norm_id, applied_text, order_index)
+         VALUES ($1, $2, $3, $4)`,
+        [newReport.id, link.norm_id, link.applied_text, link.order_index]
+      );
+    }
+
+    const costs = await client.query(
+      "SELECT * FROM report_cost_estimates WHERE report_id = $1 ORDER BY order_index",
+      [req.params.id]
+    );
+    for (const cost of costs.rows) {
+      await client.query(
+        `INSERT INTO report_cost_estimates (report_id, item_description, min_cost_cents, max_cost_cents, order_index)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [newReport.id, cost.item_description, cost.min_cost_cents, cost.max_cost_cents, cost.order_index]
+      );
+    }
+
+    await client.query("COMMIT");
+    res.status(201).json(newReport);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Erro ao duplicar laudo." });
+  } finally {
+    client.release();
   }
 });
 

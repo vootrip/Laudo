@@ -13,6 +13,8 @@ const templateRoutes = require("./routes/templates");
 const photoRoutes = require("./routes/photos");
 const reportStructureRoutes = require("./routes/reportStructure");
 const processRoutes = require("./routes/processes");
+const sectionTemplateRoutes = require("./routes/sectionTemplates");
+const signatureRoutes = require("./routes/signatures");
 
 const app = express();
 
@@ -38,6 +40,8 @@ app.use("/templates", templateRoutes);
 app.use("/reports", photoRoutes);
 app.use("/reports", reportStructureRoutes);
 app.use("/processes", processRoutes);
+app.use("/section-templates", sectionTemplateRoutes);
+app.use("/reports", signatureRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

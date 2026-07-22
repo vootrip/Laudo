@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LaudoProfi</title>
+<style>
+  :root {
+    --bg: #F1EFE8;
+    --surface: #FFFFFF;
+    --border: #E0DED6;
+    --text: #2C2C2A;
+    --text-secondary: #6B6A64;
+    --text-muted: #999790;
+    --accent: #378ADD;
+    --accent-bg: #E6F1FB;
+    --accent-text: #0C447C;
+    --success-bg: #EAF3DE;
+    --success-text: #27500A;
+    --warning-bg: #FAEEDA;
+    --warning-text: #854F0B;
+    --danger-bg: #FCEBEB;
+    --danger-text: #791F1F;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    min-height: 100vh;
+  }
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .brand { font-weight: 700; font-size: 16px; }
+  .topbar .brand span { font-family: "IBM Plex Mono", monospace; color: var(--accent); }
+  .topbar .user-info { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 12px; }
+  .topbar button.link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; }
+
+  .container { max-width: 920px; margin: 0 auto; padding: 24px; }
+  .center-container { max-width: 420px; margin: 60px auto; padding: 0 20px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .card .subtitle { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+
+  label { font-size: 12px; color: var(--text-secondary); display: block; margin: 10px 0 4px; font-weight: 500; }
+  input, select, textarea {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--surface);
+    color: var(--text);
+  }
+  textarea { resize: vertical; }
+
+  button.btn {
+    padding: 10px 16px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+  }
+  button.btn.primary { background: var(--text); color: #fff; border: none; }
+  button.btn.primary:disabled { background: #B8B6AC; cursor: not-allowed; }
+  button.btn:hover { opacity: 0.9; }
+
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 160px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--text-secondary); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  td { padding: 10px 6px; border-bottom: 1px solid #EFEDE5; }
+  tr:last-child td { border-bottom: none; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; display: inline-block; }
+  .pill.rascunho { background: var(--warning-bg); color: var(--warning-text); }
+  .pill.em_revisao { background: var(--accent-bg); color: var(--accent-text); }
+  .pill.assinado { background: var(--success-bg); color: var(--success-text); }
+  .pill.entregue { background: #E8E6DC; color: #57564F; }
+  .pill.complementado, .pill.retificado { background: var(--danger-bg); color: var(--danger-text); }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tabs button {
+    background: none; border: none; padding: 10px 16px; font-size: 13px; font-weight: 500;
+    color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--text); }
+
+  .error-box { background: var(--danger-bg); color: var(--danger-text); padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin: 10px 0; }
+  .info-box { background: var(--accent-bg); color: var(--accent-text); padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin: 10px 0; }
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); font-size: 13px; }
+
+  .plan-banner {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 20px; margin-bottom: 16px; font-size: 13px;
+  }
+  .compare-box { background: var(--bg); border-radius: var(--radius); padding: 14px; margin-top: 10px; }
+  .compare-box .label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 6px; }
+  .compare-box .text { font-size: 13px; line-height: 1.6; }
+
+  code.mono { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+// =====================================================================
+// Configuração — troque pela URL real do seu backend em produção
+// =====================================================================
+const API_BASE = "https://laudo-backend.onrender.com";
+
+// =====================================================================
+// Estado global simples (sem framework — app pequena o suficiente
+// para não precisar de React/Vue aqui)
+// =====================================================================
+const state = {
+  token: localStorage.getItem("laudo_token") || null,
+  engineer: JSON.parse(localStorage.getItem("laudo_engineer") || "null"),
+  view: "loading",
+  clients: [],
+  projects: [],
+  templates: [],
+  reports: [],
+  activeReport: null,
+  error: null,
+  reportFilterStatus: "all",
+  reportSearch: "",
+};
+
+function setToken(token, engineer) {
+  state.token = token;
+  state.engineer = engineer;
+  if (token) {
+    localStorage.setItem("laudo_token", token);
+    localStorage.setItem("laudo_engineer", JSON.stringify(engineer));
+  } else {
+    localStorage.removeItem("laudo_token");
+    localStorage.removeItem("laudo_engineer");
+  }
+}
+
+// =====================================================================
+// Helper de chamadas à API
+// =====================================================================
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
+
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const err = new Error(data.error || "Erro na requisição");
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+// =====================================================================
+// Navegação
+// =====================================================================
+function goTo(view) {
+  state.view = view;
+  state.error = null;
+  render();
+}
+
+// =====================================================================
+// Autenticação
+// =====================================================================
+async function handleRegister(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const data = await api("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        name: f.name.value,
+        email: f.email.value,
+        password: f.password.value,
+        crea_number: f.crea_number.value,
+        crea_region: f.crea_region.value,
+        company_name: f.company_name.value,
+      }),
+    });
+    setToken(data.token, data.engineer);
+    await loadDashboardData();
+    goTo("dashboard");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const data = await api("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: f.email.value, password: f.password.value }),
+    });
+    setToken(data.token, data.engineer);
+    await loadDashboardData();
+    goTo("dashboard");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+function logout() {
+  setToken(null, null);
+  goTo("login");
+}
+
+// =====================================================================
+// Carregamento de dados
+// =====================================================================
+async function loadDashboardData() {
+  try {
+    const [clients, projects, templates, reports] = await Promise.all([
+      api("/clients"),
+      api("/projects"),
+      api("/templates"),
+      api("/reports"),
+    ]);
+    state.clients = clients;
+    state.projects = projects;
+    state.templates = templates;
+    state.reports = reports;
+  } catch (err) {
+    state.error = err.message;
+  }
+}
+
+// =====================================================================
+// Ações — clientes e projetos
+// =====================================================================
+async function handleCreateClient(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api("/clients", {
+      method: "POST",
+      body: JSON.stringify({ name: f.name.value, document: f.document.value, phone: f.phone.value, email: f.email.value }),
+    });
+    await loadDashboardData();
+    goTo("dashboard");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleCreateProject(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api("/projects", {
+      method: "POST",
+      body: JSON.stringify({ client_id: f.client_id.value, address: f.address.value, project_type: f.project_type.value, building_name: f.building_name.value }),
+    });
+    await loadDashboardData();
+    goTo("dashboard");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+// =====================================================================
+// Ações — laudos
+// =====================================================================
+async function handleCreateReport(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const report = await api("/reports", {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: f.project_id.value,
+        template_id: f.template_id.value,
+        title: f.title.value,
+        art_number: f.art_number.value,
+      }),
+    });
+    state.activeReport = report;
+    goTo("report_choose_source");
+  } catch (err) {
+    if (err.status === 402) {
+      state.error = null;
+      goTo("upgrade");
+    } else {
+      state.error = err.message;
+      render();
+    }
+  }
+}
+
+async function handleGenerate(e) {
+  e.preventDefault();
+  const f = e.target;
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Gerando...";
+  try {
+    const result = await api(`/reports/${state.activeReport.id}/generate`, {
+      method: "POST",
+      body: JSON.stringify({
+        observation: f.observation.value,
+        item_categories: f.item_categories.value.split(",").map((s) => s.trim()).filter(Boolean),
+      }),
+    });
+    state.activeReport = result.report;
+    state.lastAiResult = result.ai;
+    goTo("report_review");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Gerar com IA";
+  }
+}
+
+async function handleImportDocument(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fileInput = f.file;
+  if (!fileInput.files.length) {
+    state.error = "Selecione um arquivo .docx ou .pdf.";
+    render();
+    return;
+  }
+
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Revisando...";
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch(`${API_BASE}/reports/${state.activeReport.id}/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.token}` },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao importar documento.");
+
+    state.activeReport = data.report;
+    state.lastReview = data.review;
+    goTo("report_import_review");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enviar e revisar";
+  }
+}
+
+async function handleImportReview(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const updated = await api(`/reports/${state.activeReport.id}/review`, {
+      method: "PATCH",
+      body: JSON.stringify({ edited_text: f.edited_text.value }),
+    });
+    state.activeReport = updated;
+    await loadDashboardData();
+    await loadReportPhotos(updated.id);
+    goTo("report_done");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+
+async function handleReview(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const updated = await api(`/reports/${state.activeReport.id}/review`, {
+      method: "PATCH",
+      body: JSON.stringify({ edited_text: f.edited_text.value, edited_opinion: f.edited_opinion.value }),
+    });
+    state.activeReport = updated;
+    await loadDashboardData();
+    await loadReportPhotos(updated.id);
+    goTo("report_done");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function loadReportPhotos(reportId) {
+  try {
+    state.reportPhotos = await api(`/reports/${reportId}/photos`);
+  } catch (err) {
+    state.reportPhotos = [];
+  }
+}
+
+async function handleUploadPhotos(e) {
+  e.preventDefault();
+  const f = e.target;
+  const fileInput = f.photos;
+  if (!fileInput.files.length) {
+    state.error = "Selecione ao menos uma foto.";
+    render();
+    return;
+  }
+
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Enviando...";
+
+  const formData = new FormData();
+  Array.from(fileInput.files).forEach((file) => formData.append("photos", file));
+
+  try {
+    const res = await fetch(`${API_BASE}/reports/${state.activeReport.id}/photos`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.token}` },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao enviar fotos.");
+
+    await loadReportPhotos(state.activeReport.id);
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enviar fotos";
+  }
+}
+
+async function handleDeletePhoto(photoId) {
+  try {
+    await api(`/reports/${state.activeReport.id}/photos/${photoId}`, { method: "DELETE" });
+    await loadReportPhotos(state.activeReport.id);
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function openPdf(reportId) {
+  try {
+    const res = await fetch(`${API_BASE}/reports/${reportId}/pdf`, {
+      headers: { Authorization: `Bearer ${state.token}` },
+    });
+    if (!res.ok) throw new Error("Não foi possível carregar o PDF.");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// =====================================================================
+// Render — cada view é uma função que devolve uma string HTML
+// =====================================================================
+function render() {
+  const app = document.getElementById("app");
+  if (!state.token) {
+    app.innerHTML = state.view === "register" ? viewRegister() : viewLogin();
+    bindAuthForms();
+    return;
+  }
+
+  let content;
+  switch (state.view) {
+    case "new_client": content = viewNewClient(); break;
+    case "new_project": content = viewNewProject(); break;
+    case "new_report": content = viewNewReport(); break;
+    case "report_choose_source": content = viewReportChooseSource(); break;
+    case "report_import": content = viewReportImport(); break;
+    case "report_import_review": content = viewReportImportReview(); break;
+    case "report_generate": content = viewReportGenerate(); break;
+    case "report_review": content = viewReportReview(); break;
+    case "report_done": content = viewReportDone(); break;
+    case "upgrade": content = viewUpgrade(); break;
+    default: content = viewDashboard();
+  }
+
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="brand">Laudo<span>Profi</span></div>
+      <div class="user-info">
+        ${state.engineer ? `${state.engineer.name} · plano ${state.engineer.plan}` : ""}
+        <button class="link" onclick="logout()">Sair</button>
+      </div>
+    </div>
+    <div class="container">${content}</div>
+  `;
+  bindAppForms();
+}
+
+function errorHtml() {
+  return state.error ? `<div class="error-box">${state.error}</div>` : "";
+}
+
+// ---------------------------------------------------------------
+// Views: autenticação
+// ---------------------------------------------------------------
+function viewLogin() {
+  return `
+    <div class="center-container">
+      <div class="card">
+        <h2>Entrar</h2>
+        <p class="subtitle">Acesse sua conta LaudoProfi</p>
+        ${errorHtml()}
+        <form id="loginForm">
+          <label>E-mail</label>
+          <input name="email" type="email" required>
+          <label>Senha</label>
+          <input name="password" type="password" required>
+          <div style="margin-top:16px;">
+            <button class="btn primary" type="submit" style="width:100%;">Entrar</button>
+          </div>
+        </form>
+        <p style="text-align:center; font-size:13px; margin-top:14px;">
+          Não tem conta? <a href="#" onclick="goTo('register'); return false;">Criar conta grátis</a>
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function viewRegister() {
+  return `
+    <div class="center-container">
+      <div class="card">
+        <h2>Criar conta grátis</h2>
+        <p class="subtitle">1 laudo grátis para testar, sem cartão</p>
+        ${errorHtml()}
+        <form id="registerForm">
+          <label>Nome completo</label>
+          <input name="name" required>
+          <label>E-mail</label>
+          <input name="email" type="email" required>
+          <label>Senha</label>
+          <input name="password" type="password" required minlength="6">
+          <div class="row">
+            <div>
+              <label>Número do CREA</label>
+              <input name="crea_number" required>
+            </div>
+            <div>
+              <label>UF do CREA</label>
+              <input name="crea_region" maxlength="2" required>
+            </div>
+          </div>
+          <label>Nome do escritório (opcional)</label>
+          <input name="company_name">
+          <div style="margin-top:16px;">
+            <button class="btn primary" type="submit" style="width:100%;">Criar conta grátis</button>
+          </div>
+        </form>
+        <p style="text-align:center; font-size:13px; margin-top:14px;">
+          Já tem conta? <a href="#" onclick="goTo('login'); return false;">Entrar</a>
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function bindAuthForms() {
+  const loginForm = document.getElementById("loginForm");
+  if (loginForm) loginForm.addEventListener("submit", handleLogin);
+  const registerForm = document.getElementById("registerForm");
+  if (registerForm) registerForm.addEventListener("submit", handleRegister);
+}
+
+const STATUS_LABELS = {
+  rascunho: "Rascunho",
+  em_revisao: "Em revisão",
+  assinado: "Assinado",
+  entregue: "Entregue",
+  complementado: "Complementado",
+  retificado: "Retificado",
+};
+
+function getFilteredReports() {
+  return state.reports.filter((r) => {
+    const matchesStatus = state.reportFilterStatus === "all" || r.status === state.reportFilterStatus;
+    const matchesSearch = !state.reportSearch || r.title.toLowerCase().includes(state.reportSearch.toLowerCase());
+    return matchesStatus && matchesSearch;
+  });
+}
+
+function handleFilterStatusChange(value) {
+  state.reportFilterStatus = value;
+  render();
+}
+
+function handleSearchChange(value) {
+  state.reportSearch = value;
+  render();
+}
+
+async function handleDuplicateReport(reportId) {
+  try {
+    const newReport = await api(`/reports/${reportId}/duplicate`, { method: "POST", body: JSON.stringify({}) });
+    await loadDashboardData();
+    state.activeReport = newReport;
+    goTo("report_choose_source");
+  } catch (err) {
+    if (err.status === 402) {
+      state.error = null;
+      goTo("upgrade");
+    } else {
+      state.error = err.message;
+      render();
+    }
+  }
+}
+
+async function handleSignReport(reportId) {
+  if (!confirm("Assinar este laudo? Depois de assinado, o conteúdo fica travado — para corrigir será preciso destravar explicitamente para revisão.")) return;
+  try {
+    await api(`/reports/${reportId}/sign`, { method: "POST", body: JSON.stringify({}) });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleDeliverReport(reportId) {
+  try {
+    await api(`/reports/${reportId}/deliver`, { method: "PATCH" });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleUnlockReport(reportId) {
+  if (!confirm("Destravar este laudo para revisão? A versão assinada atual fica preservada no histórico — ao assinar de novo, você vai precisar descrever o que mudou.")) return;
+  try {
+    await api(`/reports/${reportId}/unlock-for-revision`, { method: "POST" });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+function reportRowActions(r) {
+  const actions = [];
+  if (r.generated_content_json) {
+    actions.push(`<button class="btn" onclick="openPdf('${r.id}')">Ver PDF</button>`);
+  }
+  if (r.status === "em_revisao") {
+    actions.push(`<button class="btn primary" onclick="handleSignReport('${r.id}')">Assinar</button>`);
+  }
+  if (r.status === "assinado") {
+    actions.push(`<button class="btn" onclick="handleDeliverReport('${r.id}')">Marcar entregue</button>`);
+    actions.push(`<button class="btn" onclick="handleUnlockReport('${r.id}')">Destravar p/ revisão</button>`);
+  }
+  if (r.status === "entregue") {
+    actions.push(`<button class="btn" onclick="handleUnlockReport('${r.id}')">Destravar p/ revisão</button>`);
+  }
+  actions.push(`<button class="btn" onclick="handleDuplicateReport('${r.id}')" title="Cria um novo laudo em rascunho com as mesmas seções">Duplicar</button>`);
+  return actions.join(" ");
+}
+
+// ---------------------------------------------------------------
+// View: dashboard
+// ---------------------------------------------------------------
+function viewDashboard() {
+  const filtered = getFilteredReports();
+  const reportsRows = filtered.length
+    ? filtered.map((r) => `
+        <tr>
+          <td>${r.title}</td>
+          <td><span class="pill ${r.status}">${STATUS_LABELS[r.status] || r.status}</span></td>
+          <td>${new Date(r.created_at).toLocaleDateString("pt-BR")}</td>
+          <td style="white-space:nowrap;">${reportRowActions(r)}</td>
+        </tr>`).join("")
+    : `<tr><td colspan="4" class="empty-state">Nenhum laudo encontrado com esse filtro.</td></tr>`;
+
+  const statusOptions = ["all", ...Object.keys(STATUS_LABELS)]
+    .map((s) => `<option value="${s}" ${state.reportFilterStatus === s ? "selected" : ""}>${s === "all" ? "Todos os status" : STATUS_LABELS[s]}</option>`)
+    .join("");
+
+  return `
+    ${errorHtml()}
+    <div class="plan-banner">
+      <span>Plano atual: <strong>${state.engineer.plan}</strong></span>
+      <button class="btn" onclick="goTo('upgrade')">Ver planos</button>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <h2 style="margin:0;">Laudos</h2>
+        <button class="btn primary" onclick="goTo('new_report')">+ Novo laudo</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <input type="text" placeholder="Buscar por título..." value="${state.reportSearch}"
+               oninput="handleSearchChange(this.value)">
+        <select onchange="handleFilterStatusChange(this.value)">${statusOptions}</select>
+      </div>
+      <table style="margin-top:12px;">
+        <thead><tr><th>Título</th><th>Status</th><th>Criado em</th><th></th></tr></thead>
+        <tbody>${reportsRows}</tbody>
+      </table>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0; font-size:14px;">Clientes (${state.clients.length})</h2>
+          <button class="btn" onclick="goTo('new_client')">+ Novo</button>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h2 style="margin:0; font-size:14px;">Projetos (${state.projects.length})</h2>
+          <button class="btn" onclick="goTo('new_project')">+ Novo</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// Views: cadastro de cliente e projeto
+// ---------------------------------------------------------------
+function viewNewClient() {
+  return `
+    <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+    <div class="card" style="margin-top:12px;">
+      <h2>Novo cliente</h2>
+      ${errorHtml()}
+      <form id="newClientForm">
+        <label>Nome</label>
+        <input name="name" required>
+        <label>CPF/CNPJ</label>
+        <input name="document">
+        <label>Telefone</label>
+        <input name="phone">
+        <label>E-mail</label>
+        <input name="email" type="email">
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Salvar cliente</button></div>
+      </form>
+    </div>
+  `;
+}
+
+function viewNewProject() {
+  if (state.clients.length === 0) {
+    return `
+      <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+      <div class="card" style="margin-top:12px;">
+        <p>Você precisa cadastrar um cliente antes de criar um projeto.</p>
+        <button class="btn primary" onclick="goTo('new_client')">Cadastrar cliente</button>
+      </div>
+    `;
+  }
+  const options = state.clients.map((c) => `<option value="${c.id}">${c.name}</option>`).join("");
+  return `
+    <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+    <div class="card" style="margin-top:12px;">
+      <h2>Novo projeto</h2>
+      ${errorHtml()}
+      <form id="newProjectForm">
+        <label>Cliente</label>
+        <select name="client_id" required>${options}</select>
+        <label>Objeto da perícia (nome do imóvel/edificação)</label>
+        <input name="building_name" placeholder="Ex: Edifício Residencial Aurora">
+        <label>Endereço do imóvel</label>
+        <input name="address" required>
+        <label>Tipo</label>
+        <select name="project_type">
+          <option value="residencial">Residencial</option>
+          <option value="comercial">Comercial</option>
+          <option value="industrial">Industrial</option>
+        </select>
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Salvar projeto</button></div>
+      </form>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// Views: fluxo de criação de laudo
+// ---------------------------------------------------------------
+function viewNewReport() {
+  if (state.projects.length === 0) {
+    return `
+      <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+      <div class="card" style="margin-top:12px;">
+        <p>Você precisa cadastrar um projeto antes de criar um laudo.</p>
+        <button class="btn primary" onclick="goTo('new_project')">Cadastrar projeto</button>
+      </div>
+    `;
+  }
+  const projectOptions = state.projects.map((p) => `<option value="${p.id}">${p.address} — ${p.client_name}</option>`).join("");
+  const templateOptions = state.templates.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+  return `
+    <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+    <div class="card" style="margin-top:12px;">
+      <h2>Novo laudo</h2>
+      ${errorHtml()}
+      <form id="newReportForm">
+        <label>Projeto</label>
+        <select name="project_id" required>${projectOptions}</select>
+        <label>Modelo de laudo</label>
+        <select name="template_id" required>${templateOptions}</select>
+        <label>Título do laudo</label>
+        <input name="title" placeholder="Ex: Laudo de vistoria - Rua X" required>
+        <label>Número da ART (opcional nesta etapa, recomendado antes da assinatura)</label>
+        <input name="art_number" placeholder="Ex: BR2026123456789">
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Criar rascunho</button></div>
+      </form>
+    </div>
+  `;
+}
+
+function viewReportChooseSource() {
+  return `
+    <div class="card" style="text-align:center; max-width:460px; margin:0 auto;">
+      <h2>${state.activeReport.title}</h2>
+      <p class="subtitle">Como você quer preencher este laudo?</p>
+      <div class="row" style="margin-top:16px;">
+        <button class="btn primary" style="padding:16px;" onclick="goTo('report_generate')">
+          Preencher formulário<br><span style="font-weight:400; font-size:12px;">Descrever a observação e deixar a IA gerar</span>
+        </button>
+        <button class="btn" style="padding:16px;" onclick="goTo('report_import')">
+          Importar documento pronto<br><span style="font-weight:400; font-size:12px;">Já tenho um .docx ou .pdf escrito</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function viewReportImport() {
+  return `
+    <button class="btn" onclick="goTo('report_choose_source')">← Voltar</button>
+    <div class="card" style="margin-top:12px;">
+      <h2>Importar documento existente</h2>
+      <p class="subtitle">A IA vai revisar gramática e apontar o que falta — sem reescrever ou resumir seu texto</p>
+      ${errorHtml()}
+      <form id="importForm">
+        <label>Arquivo (.docx ou .pdf)</label>
+        <input type="file" name="file" accept=".docx,.pdf" required>
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Enviar e revisar</button></div>
+      </form>
+    </div>
+  `;
+}
+
+function viewReportImportReview() {
+  const review = state.lastReview || {};
+  const missing = review.missing_items || [];
+  const incomplete = review.incomplete_items || [];
+  const hasBlockingIssues = missing.length > 0;
+
+  const checklist = (missing.length || incomplete.length)
+    ? `
+      <div class="card" style="background: var(--bg);">
+        <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Checklist de completude</p>
+        ${missing.map((i) => `<div style="font-size:13px; padding:4px 0;">✕ <span style="color:var(--danger-text);">${i} — ausente</span></div>`).join("")}
+        ${incomplete.map((i) => `<div style="font-size:13px; padding:4px 0;">⚠ <span style="color:var(--warning-text);">${i} — incompleto</span></div>`).join("")}
+        <p style="font-size:11px; color:var(--text-muted); margin:8px 0 0;">Complete o que faltar diretamente no texto abaixo antes de confirmar. A assinatura só será liberada quando não houver itens ausentes.</p>
+      </div>`
+    : `<div class="info-box">✓ Nenhuma pendência encontrada no documento importado.</div>`;
+
+  return `
+    <div class="card">
+      <h2>Revisar documento importado</h2>
+      ${errorHtml()}
+      ${checklist}
+      <form id="importReviewForm">
+        <label>Texto corrigido (gramática e terminologia — conteúdo original preservado)</label>
+        <textarea name="edited_text" rows="8" required>${state.activeReport.generated_content_json?.text || ""}</textarea>
+        <div style="margin-top:16px;">
+          <button class="btn primary" type="submit">Confirmar revisão</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+
+function viewReportGenerate() {
+  return `
+    <div class="card">
+      <h2>${state.activeReport.title}</h2>
+      <p class="subtitle">Descreva o que você observou — a IA vai reformular em linguagem técnica</p>
+      ${errorHtml()}
+      <form id="generateForm">
+        <label>Observação</label>
+        <textarea name="observation" rows="4" maxlength="600" required placeholder="Ex: parede da sala com rachadura de uns 20cm perto da janela, parece ser só reboco"></textarea>
+        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Descreva em poucas frases o que você observou. Se já tem um documento inteiro escrito, use <a href="#" onclick="goTo('report_choose_source'); return false;">Importar documento pronto</a> em vez de colar aqui.</p>
+        <label>Categorias do item (separadas por vírgula)</label>
+        <input name="item_categories" placeholder="Ex: paredes, infiltracao">
+        <div style="margin-top:16px;">
+          <button class="btn primary" type="submit">Gerar com IA</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function viewReportReview() {
+  const ai = state.lastAiResult;
+  return `
+    <div class="card">
+      <h2>Revisar texto do laudo</h2>
+      ${errorHtml()}
+      ${ai && ai.insufficientDetail ? `<div class="error-box">⚠ A observação original foi muito vaga. O texto abaixo permaneceu igualmente genérico de propósito — a IA não deve preencher lacunas com suposições. Considere voltar e descrever a observação com mais detalhe antes de confirmar.</div>` : ""}
+      ${ai && ai.citedNormCode ? `<div class="info-box">Norma citada: ${ai.citedNormCode}</div>` : ""}
+      <form id="reviewForm">
+        <label>Vistoria e diagnóstico (editável antes de confirmar)</label>
+        <textarea name="edited_text" rows="6" required>${state.activeReport.generated_content_json.text}</textarea>
+        <label>Parecer técnico conclusivo (editável antes de confirmar)</label>
+        <textarea name="edited_opinion" rows="4" required>${state.activeReport.technical_opinion_json?.text || ai?.technicalOpinion || ""}</textarea>
+        <div style="margin-top:16px; display:flex; gap:8px;">
+          <button type="button" class="btn" onclick="goTo('report_generate')">Gerar novamente</button>
+          <button class="btn primary" type="submit">Confirmar revisão</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function viewReportDone() {
+  const photos = state.reportPhotos || [];
+  return `
+    <div class="card">
+      <h2>Laudo revisado ✓</h2>
+      <p class="subtitle">Seu laudo está pronto. Baixe o PDF ou volte ao painel.</p>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button class="btn primary" onclick="openPdf('${state.activeReport.id}')">Ver PDF</button>
+        <button class="btn" onclick="goTo('dashboard')">Voltar ao painel</button>
+      </div>
+      <p style="font-size:12px; color:var(--text-muted); margin-top:16px;">
+        A assinatura digital (D4Sign) ainda não está conectada nesta versão — próximo passo do produto.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Fotos do laudo</h2>
+      <p class="subtitle">As fotos anexadas aparecem no PDF final, na seção "Registro Fotográfico"</p>
+      ${errorHtml()}
+      <form id="photoUploadForm">
+        <label>Adicionar foto (.jpg, .png — até 2MB cada)</label>
+        <input type="file" name="photos" accept="image/*" multiple>
+        <div style="margin-top:12px;"><button class="btn" type="submit">Enviar fotos</button></div>
+      </form>
+      ${photos.length > 0 ? `
+        <div class="row" style="margin-top:16px; flex-wrap:wrap;">
+          ${photos.map((p) => `
+            <div style="max-width:140px;">
+              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+              <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
+              <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p class="empty-state">Nenhuma foto anexada ainda.</p>`}
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// View: upgrade / limite atingido
+// ---------------------------------------------------------------
+function viewUpgrade() {
+  return `
+    <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+    <div class="card" style="margin-top:12px; text-align:center; max-width:420px; margin-left:auto; margin-right:auto;">
+      <h2>Escolha um plano</h2>
+      <p class="subtitle">Você atingiu o limite de laudos do plano grátis</p>
+      <div class="card" style="border:2px solid var(--accent); text-align:left;">
+        <span class="pill" style="background:var(--accent-bg); color:var(--accent-text);">Mais popular</span>
+        <p style="font-size:15px; font-weight:600; margin:8px 0 2px;">Pro — R$149/mês</p>
+        <p class="subtitle" style="margin-bottom:12px;">Até 20 laudos por mês</p>
+        <button class="btn primary" style="width:100%;" onclick="alert('Checkout do Stripe ainda não configurado — próximo passo do produto.')">Assinar Pro</button>
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// Bind de formulários da área logada
+// ---------------------------------------------------------------
+function bindAppForms() {
+  const map = {
+    newClientForm: handleCreateClient,
+    newProjectForm: handleCreateProject,
+    newReportForm: handleCreateReport,
+    generateForm: handleGenerate,
+    reviewForm: handleReview,
+    importForm: handleImportDocument,
+    importReviewForm: handleImportReview,
+    photoUploadForm: handleUploadPhotos,
+  };
+  Object.entries(map).forEach(([id, handler]) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("submit", handler);
+  });
+}
+
+// =====================================================================
+// Boot
+// =====================================================================
+async function boot() {
+  if (state.token) {
+    await loadDashboardData();
+    state.view = "dashboard";
+  } else {
+    state.view = "login";
+  }
+  render();
+}
+
+boot();
+</script>
+
+</body>
+</html>
