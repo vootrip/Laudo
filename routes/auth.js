@@ -75,4 +75,53 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------
+// GET /auth/me — dados do engenheiro autenticado
+// ---------------------------------------------------------------
+const { requireAuth } = require("../middleware/auth");
+
+router.get("/me", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, email, crea_number, crea_region, company_name,
+              logo_url, office_address, office_phone, plan
+       FROM engineers WHERE id = $1`,
+      [req.engineerId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Engenheiro não encontrado." });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao buscar perfil." });
+  }
+});
+
+// ---------------------------------------------------------------
+// PATCH /auth/profile — edita dados do escritório, incluindo
+// endereço e telefone usados no rodapé de todas as páginas do PDF
+// (mesmo padrão do laudo real: nome, título, endereço, fone, e-mail)
+// ---------------------------------------------------------------
+router.patch("/profile", requireAuth, async (req, res) => {
+  const { company_name, office_address, office_phone, logo_url } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE engineers
+       SET company_name = COALESCE($1, company_name),
+           office_address = COALESCE($2, office_address),
+           office_phone = COALESCE($3, office_phone),
+           logo_url = COALESCE($4, logo_url),
+           updated_at = now()
+       WHERE id = $5
+       RETURNING id, name, email, company_name, office_address, office_phone, logo_url`,
+      [company_name, office_address, office_phone, logo_url, req.engineerId]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao atualizar perfil." });
+  }
+});
+
 module.exports = router;

@@ -251,7 +251,9 @@ router.get("/:id/pdf", async (req, res) => {
     const report = reportResult.rows[0];
 
     const engineerResult = await pool.query(
-      "SELECT name, company_name, crea_number, crea_region, logo_url FROM engineers WHERE id = $1",
+      `SELECT name, email, company_name, crea_number, crea_region, logo_url,
+              office_address, office_phone
+       FROM engineers WHERE id = $1`,
       [req.engineerId]
     );
     const engineer = engineerResult.rows[0];
@@ -264,20 +266,73 @@ router.get("/:id/pdf", async (req, res) => {
     );
     const project = projectResult.rows[0] || {};
 
+    // Fotos com a imagem decodificada em buffer (pdfkit precisa de
+    // Buffer, não da data URI crua) e o vínculo de seção/subseção,
+    // para o PDF numerar e posicionar cada figura corretamente.
     const photosResult = await pool.query(
-      "SELECT url, caption FROM report_photos WHERE report_id = $1 ORDER BY display_order",
+      "SELECT url, caption, display_order, section_id, subsection_id FROM report_photos WHERE report_id = $1 ORDER BY display_order",
       [report.id]
     );
-    const photos = photosResult.rows;
+    const photos = photosResult.rows.map((p) => {
+      let image_buffer = null;
+      if (p.url && p.url.startsWith("data:")) {
+        const base64 = p.url.split(",")[1];
+        image_buffer = Buffer.from(base64, "base64");
+      }
+      return { ...p, image_buffer };
+    });
 
+    // Seções/subseções estruturadas (novo formato). Laudos antigos sem
+    // nenhuma linha aqui caem no fallback de texto plano do pdfService.
+    const sectionsResult = await pool.query(
+      `SELECT id, section_number, section_title, content_text, order_index
+       FROM report_sections WHERE report_id = $1 ORDER BY order_index`,
+      [report.id]
+    );
+    const subsectionsResult = await pool.query(
+      `SELECT rs.id, rs.section_id, rs.subsection_number, rs.subsection_title,
+              rs.content_text, rs.order_index
+       FROM report_subsections rs
+       JOIN report_sections s ON s.id = rs.section_id
+       WHERE s.report_id = $1
+       ORDER BY rs.order_index`,
+      [report.id]
+    );
+    const sections = sectionsResult.rows.map((section) => ({
+      ...section,
+      subsections: subsectionsResult.rows.filter((sub) => sub.section_id === section.id),
+    }));
+
+    // Normas vinculadas ao laudo (nova tabela), com fallback para o
+    // formato antigo (reports.norm_references) se ainda não migrado.
     let norms = [];
-    if (report.norm_references && report.norm_references.length > 0) {
+    const normLinksResult = await pool.query(
+      `SELECT tn.code, tn.title, tn.scope_summary, rnl.applied_text
+       FROM report_norm_links rnl
+       JOIN technical_norms tn ON tn.id = rnl.norm_id
+       WHERE rnl.report_id = $1
+       ORDER BY rnl.order_index`,
+      [report.id]
+    );
+    if (normLinksResult.rows.length > 0) {
+      norms = normLinksResult.rows;
+    } else if (report.norm_references && report.norm_references.length > 0) {
       const normsResult = await pool.query(
-        "SELECT code, title FROM technical_norms WHERE code = ANY($1)",
+        "SELECT code, title, scope_summary FROM technical_norms WHERE code = ANY($1)",
         [report.norm_references]
       );
       norms = normsResult.rows;
     }
+
+    const costEstimatesResult = await pool.query(
+      `SELECT id, item_description, min_cost_cents, max_cost_cents, order_index
+       FROM report_cost_estimates WHERE report_id = $1 ORDER BY order_index`,
+      [report.id]
+    );
+    const costTotals = costEstimatesResult.rows.reduce(
+      (acc, row) => ({ min: acc.min + row.min_cost_cents, max: acc.max + row.max_cost_cents }),
+      { min: 0, max: 0 }
+    );
 
     // Nota: se o engenheiro tiver logo_url cadastrada, o ideal é baixar
     // a imagem aqui (fetch + arrayBuffer) e passar como engineer.logo_buffer
@@ -289,9 +344,14 @@ router.get("/:id/pdf", async (req, res) => {
       project: { address: project.address, building_name: project.building_name },
       client: { name: project.client_name },
       report,
+      sections,
       norms,
       photos,
-      photoCount: photos.length,
+      costEstimates: {
+        items: costEstimatesResult.rows,
+        total_min_cents: costTotals.min,
+        total_max_cents: costTotals.max,
+      },
     });
 
     res.setHeader("Content-Type", "application/pdf");
