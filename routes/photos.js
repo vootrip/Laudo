@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const { assertEditable } = require("../middleware/reportGuards");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -34,14 +35,10 @@ router.post("/:id/photos", upload.array("photos", 10), async (req, res) => {
   }
 
   try {
-    // Confirma que o laudo pertence ao engenheiro autenticado
-    const reportCheck = await pool.query(
-      "SELECT id FROM reports WHERE id = $1 AND engineer_id = $2",
-      [req.params.id, req.engineerId]
-    );
-    if (reportCheck.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
+    // Confirma que o laudo pertence ao engenheiro autenticado E está
+    // em status editável (fotos são conteúdo do laudo como qualquer outro)
+    const reportCheck = await assertEditable(req, res, req.params.id);
+    if (!reportCheck) return;
 
     const captions = Array.isArray(req.body.captions) ? req.body.captions : [req.body.captions];
     const inserted = [];
@@ -126,6 +123,8 @@ router.get("/:id/photos/:photoId", async (req, res) => {
 // ---------------------------------------------------------------
 router.delete("/:id/photos/:photoId", async (req, res) => {
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `DELETE FROM report_photos
        WHERE id = $1 AND report_id = $2

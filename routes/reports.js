@@ -5,6 +5,7 @@ const pdfParse = require("pdf-parse");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
 const { checkPlanLimit } = require("../middleware/checkPlanLimit");
+const { assertEditable } = require("../middleware/reportGuards");
 const { generateTechnicalText, reviewImportedDocument } = require("../services/aiReportService");
 const { generateReportPdf } = require("../services/pdfService");
 
@@ -21,7 +22,7 @@ router.use(requireAuth);
 // status 402 e o frontend deve redirecionar para a tela de planos.
 // ---------------------------------------------------------------
 router.post("/", checkPlanLimit, async (req, res) => {
-  const { project_id, template_id, title, art_number, raw_input_json } = req.body;
+  const { project_id, template_id, title, art_number, raw_input_json, process_id } = req.body;
 
   if (!project_id || !template_id || !title) {
     return res.status(400).json({ error: "project_id, template_id e title são obrigatórios." });
@@ -29,10 +30,10 @@ router.post("/", checkPlanLimit, async (req, res) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'rascunho')
+      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, process_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'rascunho')
        RETURNING *`,
-      [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}]
+      [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}, process_id || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -78,13 +79,8 @@ router.post("/:id/generate", async (req, res) => {
   }
 
   try {
-    const reportCheck = await pool.query(
-      "SELECT id FROM reports WHERE id = $1 AND engineer_id = $2",
-      [req.params.id, req.engineerId]
-    );
-    if (reportCheck.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
+    const reportCheck = await assertEditable(req, res, req.params.id);
+    if (!reportCheck) return;
 
     const aiResult = await generateTechnicalText(observation, item_categories || [], req.engineerId);
 
@@ -120,11 +116,14 @@ router.patch("/:id/review", async (req, res) => {
   const { edited_text, edited_opinion } = req.body;
 
   try {
+    const reportCheck = await assertEditable(req, res, req.params.id);
+    if (!reportCheck) return;
+
     const result = await pool.query(
       `UPDATE reports
        SET generated_content_json = jsonb_set(COALESCE(generated_content_json, '{}'::jsonb), '{text}', to_jsonb($1::text)),
            technical_opinion_json = jsonb_set(COALESCE(technical_opinion_json, '{}'::jsonb), '{text}', to_jsonb($2::text)),
-           status = 'revisado',
+           status = 'em_revisao',
            updated_at = now()
        WHERE id = $3 AND engineer_id = $4
        RETURNING *`,
@@ -152,6 +151,9 @@ router.post("/:id/import", upload.single("file"), async (req, res) => {
   }
 
   try {
+    const reportCheck = await assertEditable(req, res, req.params.id);
+    if (!reportCheck) return;
+
     let rawText;
     if (req.file.mimetype === "application/pdf") {
       const data = await pdfParse(req.file.buffer);

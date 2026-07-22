@@ -1,6 +1,8 @@
 const express = require("express");
 const pool = require("../db/pool");
 const { requireAuth } = require("../middleware/auth");
+const { assertEditable } = require("../middleware/reportGuards");
+const { createNewVersion } = require("../services/reportVersionService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -68,9 +70,7 @@ router.post("/:id/sections", async (req, res) => {
   }
 
   try {
-    if (!(await assertReportOwnership(req.params.id, req.engineerId))) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
+    if (!(await assertEditable(req, res, req.params.id))) return;
 
     const result = await pool.query(
       `INSERT INTO report_sections (report_id, section_number, section_title, content_text, order_index)
@@ -93,6 +93,8 @@ router.patch("/:id/sections/:sectionId", async (req, res) => {
   const { section_title, content_text, order_index } = req.body;
 
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `UPDATE report_sections
        SET section_title = COALESCE($1, section_title),
@@ -117,6 +119,8 @@ router.patch("/:id/sections/:sectionId", async (req, res) => {
 // DELETE /reports/:id/sections/:sectionId (subseções somem em cascata)
 router.delete("/:id/sections/:sectionId", async (req, res) => {
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `DELETE FROM report_sections
        WHERE id = $1 AND report_id = $2
@@ -147,6 +151,8 @@ router.post("/:id/sections/:sectionId/subsections", async (req, res) => {
   }
 
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     // Confirma que a seção pai pertence a um laudo deste engenheiro
     const sectionCheck = await pool.query(
       `SELECT s.id FROM report_sections s
@@ -179,6 +185,8 @@ router.patch("/:id/subsections/:subsectionId", async (req, res) => {
   const { subsection_title, content_text, order_index } = req.body;
 
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `UPDATE report_subsections rs
        SET subsection_title = COALESCE($1, subsection_title),
@@ -205,6 +213,8 @@ router.patch("/:id/subsections/:subsectionId", async (req, res) => {
 // DELETE /reports/:id/subsections/:subsectionId
 router.delete("/:id/subsections/:subsectionId", async (req, res) => {
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `DELETE FROM report_subsections rs
        USING report_sections s
@@ -259,9 +269,7 @@ router.post("/:id/norms", async (req, res) => {
   }
 
   try {
-    if (!(await assertReportOwnership(req.params.id, req.engineerId))) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
+    if (!(await assertEditable(req, res, req.params.id))) return;
 
     // Se applied_text não vier, já pré-preenche com o texto padrão da
     // norma (scope_summary), para o engenheiro só ajustar em vez de
@@ -288,6 +296,8 @@ router.post("/:id/norms", async (req, res) => {
 router.patch("/:id/norms/:linkId", async (req, res) => {
   const { applied_text, order_index } = req.body;
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `UPDATE report_norm_links
        SET applied_text = COALESCE($1, applied_text),
@@ -310,6 +320,8 @@ router.patch("/:id/norms/:linkId", async (req, res) => {
 // DELETE /reports/:id/norms/:linkId
 router.delete("/:id/norms/:linkId", async (req, res) => {
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `DELETE FROM report_norm_links
        WHERE id = $1 AND report_id = $2
@@ -369,9 +381,8 @@ router.post("/:id/cost-estimates", async (req, res) => {
   }
 
   try {
-    if (!(await assertReportOwnership(req.params.id, req.engineerId))) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `INSERT INTO report_cost_estimates (report_id, item_description, min_cost_cents, max_cost_cents, order_index)
        VALUES ($1, $2, $3, $4, COALESCE($5, (SELECT COALESCE(MAX(order_index), -1) + 1 FROM report_cost_estimates WHERE report_id = $1)))
@@ -389,6 +400,8 @@ router.post("/:id/cost-estimates", async (req, res) => {
 router.patch("/:id/cost-estimates/:estimateId", async (req, res) => {
   const { item_description, min_cost_cents, max_cost_cents, order_index } = req.body;
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `UPDATE report_cost_estimates
        SET item_description = COALESCE($1, item_description),
@@ -413,6 +426,8 @@ router.patch("/:id/cost-estimates/:estimateId", async (req, res) => {
 // DELETE /reports/:id/cost-estimates/:estimateId
 router.delete("/:id/cost-estimates/:estimateId", async (req, res) => {
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `DELETE FROM report_cost_estimates
        WHERE id = $1 AND report_id = $2
@@ -438,6 +453,8 @@ router.delete("/:id/cost-estimates/:estimateId", async (req, res) => {
 router.patch("/:id/responsibility", async (req, res) => {
   const { causal_link_text, responsible_party_text } = req.body;
   try {
+    if (!(await assertEditable(req, res, req.params.id))) return;
+
     const result = await pool.query(
       `UPDATE reports
        SET causal_link_text = COALESCE($1, causal_link_text),
@@ -533,6 +550,131 @@ router.get("/:id/full", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao montar visão completa do laudo." });
+  }
+});
+
+// =================================================================
+// CICLO DE VIDA E VERSIONAMENTO
+// =================================================================
+
+// POST /reports/:id/sign — assina o laudo: cria um snapshot
+// imutável em report_versions e move o status para 'assinado'.
+// Só é permitido a partir de 'em_revisao' (o engenheiro precisa
+// ter passado pelo fluxo de revisão antes de assinar). A partir
+// da segunda assinatura (correção/complementação de um laudo já
+// assinado antes), change_summary é obrigatório.
+router.post("/:id/sign", async (req, res) => {
+  const { change_summary, signed_pdf_url } = req.body;
+  try {
+    const reportResult = await pool.query(
+      "SELECT status FROM reports WHERE id = $1 AND engineer_id = $2",
+      [req.params.id, req.engineerId]
+    );
+    if (reportResult.rows.length === 0) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+    if (reportResult.rows[0].status !== "em_revisao") {
+      return res.status(409).json({
+        error: `Só é possível assinar um laudo com status "em_revisao". Status atual: "${reportResult.rows[0].status}".`,
+      });
+    }
+
+    const version = await createNewVersion(req.params.id, { changeSummary: change_summary, signedPdfUrl: signed_pdf_url });
+    res.status(201).json({ message: "Laudo assinado.", version });
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erro ao assinar laudo." });
+  }
+});
+
+// POST /reports/:id/unlock-for-revision — destrava um laudo já
+// assinado/entregue para correção. NÃO apaga nem sobrescreve a
+// versão assinada anterior (ela continua em report_versions,
+// acessível pelo histórico) — só volta o status para 'em_revisao'
+// para as rotas de conteúdo aceitarem edição de novo. Ao assinar
+// de novo depois, uma nova versão é criada (com change_summary
+// obrigatório) e o histórico fica completo.
+router.post("/:id/unlock-for-revision", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE reports
+       SET status = 'em_revisao', updated_at = now()
+       WHERE id = $1 AND engineer_id = $2 AND status IN ('assinado', 'entregue')
+       RETURNING id, status`,
+      [req.params.id, req.engineerId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(409).json({
+        error: "Só é possível destravar para revisão um laudo com status 'assinado' ou 'entregue' (ou o laudo não existe).",
+      });
+    }
+    res.json({ message: "Laudo destravado para revisão. A versão assinada anterior continua preservada no histórico.", report: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao destravar laudo." });
+  }
+});
+
+// PATCH /reports/:id/deliver — marca o laudo assinado como
+// entregue ao cliente (só transição de estado, sem gerar versão nova)
+router.patch("/:id/deliver", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE reports
+       SET status = 'entregue', updated_at = now()
+       WHERE id = $1 AND engineer_id = $2 AND status = 'assinado'
+       RETURNING id, status`,
+      [req.params.id, req.engineerId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(409).json({
+        error: "Só é possível marcar como entregue um laudo com status 'assinado' (ou o laudo não existe).",
+      });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao marcar laudo como entregue." });
+  }
+});
+
+// GET /reports/:id/versions — histórico completo de versões
+router.get("/:id/versions", async (req, res) => {
+  try {
+    if (!(await assertReportOwnership(req.params.id, req.engineerId))) {
+      return res.status(404).json({ error: "Laudo não encontrado." });
+    }
+    const result = await pool.query(
+      `SELECT id, version_number, change_summary, signed_pdf_url, created_at
+       FROM report_versions WHERE report_id = $1 ORDER BY version_number DESC`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao listar versões." });
+  }
+});
+
+// GET /reports/:id/versions/:versionId — snapshot completo de uma versão específica
+router.get("/:id/versions/:versionId", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT rv.* FROM report_versions rv
+       JOIN reports r ON r.id = rv.report_id
+       WHERE rv.id = $1 AND rv.report_id = $2 AND r.engineer_id = $3`,
+      [req.params.versionId, req.params.id, req.engineerId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Versão não encontrada." });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao buscar versão." });
   }
 });
 

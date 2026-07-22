@@ -12,6 +12,7 @@ const projectRoutes = require("./routes/projects");
 const templateRoutes = require("./routes/templates");
 const photoRoutes = require("./routes/photos");
 const reportStructureRoutes = require("./routes/reportStructure");
+const processRoutes = require("./routes/processes");
 
 const app = express();
 
@@ -36,6 +37,7 @@ app.use("/projects", projectRoutes);
 app.use("/templates", templateRoutes);
 app.use("/reports", photoRoutes);
 app.use("/reports", reportStructureRoutes);
+app.use("/processes", processRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);
