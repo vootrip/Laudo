@@ -72,12 +72,6 @@ router.post("/:id/generate", async (req, res) => {
     return res.status(400).json({ error: "Campo 'observation' é obrigatório." });
   }
 
-  if (observation.length > 600) {
-    return res.status(400).json({
-      error: "Observação muito longa para este campo (máximo 600 caracteres). Se você já tem um documento pronto, use a importação de documento (.docx/.pdf) em vez deste campo.",
-    });
-  }
-
   try {
     const reportCheck = await assertEditable(req, res, req.params.id);
     if (!reportCheck) return;
@@ -104,6 +98,9 @@ router.post("/:id/generate", async (req, res) => {
     res.json({ report: updated.rows[0], ai: aiResult });
   } catch (err) {
     console.error(err);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
     res.status(500).json({ error: "Erro ao gerar texto com IA: " + err.message });
   }
 });
