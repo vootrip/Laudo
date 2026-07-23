@@ -418,7 +418,6 @@ async function handleGenerate(e) {
       method: "POST",
       body: JSON.stringify({
         observation: f.observation.value,
-        item_categories: f.item_categories.value.split(",").map((s) => s.trim()).filter(Boolean),
       }),
     });
     state.activeReport = result.report;
@@ -431,6 +430,114 @@ async function handleGenerate(e) {
     btn.disabled = false;
     btn.textContent = "Gerar com IA";
   }
+}
+
+// ---------------------------------------------------------------
+// Índice do laudo — o engenheiro digita um título de seção, escolhe o
+// nível (seção principal ou subseção) e clica em Incluir: o marcador é
+// inserido no ponto do cursor dentro do textarea de observação, com a
+// numeração calculada automaticamente a partir do que já existe no
+// texto — no mesmo padrão do laudo modelo ("7) Título" para seções,
+// "7.1 Título" para subseções). Não é uma tabela separada: o marcador
+// vira parte do próprio texto que a IA processa, e o structureReportSections
+// já sabe respeitar cabeçalhos numerados existentes em vez de renumerar.
+// ---------------------------------------------------------------
+const INDEX_SECTION_LINE = /^(\d+)\)\s+.+$/;
+const INDEX_SUBSECTION_LINE = /^(\d+)\.(\d+)\s+.+$/;
+
+function computeNextIndexNumbers(text) {
+  const lines = text.split("\n");
+  let lastSection = 0;
+  let lastSubForLastSection = 0;
+
+  for (const line of lines) {
+    const sectionMatch = line.match(INDEX_SECTION_LINE);
+    if (sectionMatch) {
+      lastSection = parseInt(sectionMatch[1], 10);
+      lastSubForLastSection = 0;
+      continue;
+    }
+    const subMatch = line.match(INDEX_SUBSECTION_LINE);
+    if (subMatch && parseInt(subMatch[1], 10) === lastSection) {
+      lastSubForLastSection = Math.max(lastSubForLastSection, parseInt(subMatch[2], 10));
+    }
+  }
+
+  return {
+    nextSection: lastSection + 1,
+    nextSubsection: `${lastSection || 1}.${lastSubForLastSection + 1}`,
+    hasSection: lastSection > 0,
+  };
+}
+
+function handleInsertIndexItem() {
+  const textarea = document.getElementById("observationTextarea");
+  const titleInput = document.getElementById("indexItemTitle");
+  const level = document.getElementById("indexItemLevel").value;
+  const title = titleInput.value.trim();
+
+  if (!title) {
+    titleInput.focus();
+    return;
+  }
+
+  const cursorPos = textarea.selectionStart ?? textarea.value.length;
+  const before = textarea.value.slice(0, cursorPos);
+  const after = textarea.value.slice(cursorPos);
+
+  const { nextSection, nextSubsection, hasSection } = computeNextIndexNumbers(before);
+
+  if (level === "subsection" && !hasSection) {
+    // Não usa render() aqui de propósito: isso substituiria o HTML inteiro
+    // da tela e descartaria o que já foi digitado no textarea (o conteúdo
+    // dele só existe no DOM, não é sincronizado com o state a cada tecla).
+    alert("Inclua uma seção principal antes de adicionar uma subseção.");
+    return;
+  }
+
+  const heading = level === "section" ? `${nextSection}) ${title}` : `${nextSubsection} ${title}`;
+
+  // Garante linhas em branco separando o novo cabeçalho do texto ao redor,
+  // sem duplicar quebras de linha se já existirem
+  const needsLeadingBreak = before.length > 0 && !before.endsWith("\n\n");
+  const leading = before.length === 0 ? "" : (needsLeadingBreak ? (before.endsWith("\n") ? "\n" : "\n\n") : "");
+  const insertion = `${leading}${heading}\n`;
+
+  textarea.value = before + insertion + after;
+  const newCursorPos = (before + insertion).length;
+  textarea.focus();
+  textarea.setSelectionRange(newCursorPos, newCursorPos);
+
+  titleInput.value = "";
+  updateIndexPreview();
+}
+
+function extractIndexHeadings(text) {
+  return text.split("\n")
+    .map((line) => line.trim())
+    .filter((line) => INDEX_SECTION_LINE.test(line) || INDEX_SUBSECTION_LINE.test(line));
+}
+
+function updateIndexPreview() {
+  const textarea = document.getElementById("observationTextarea");
+  const preview = document.getElementById("indexPreview");
+  if (!textarea || !preview) return;
+
+  const headings = extractIndexHeadings(textarea.value);
+  if (headings.length === 0) {
+    preview.innerHTML = `<p style="font-size:11px; color:var(--text-muted); margin:0;">Nenhum item de índice ainda — inclua o primeiro acima.</p>`;
+    return;
+  }
+
+  preview.innerHTML = `
+    <p style="font-size:11px; font-weight:600; color:var(--text-muted); margin:0 0 4px;">Índice atual:</p>
+    <div style="border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:#fff;">
+      ${headings.map((h) => {
+        const isSub = INDEX_SUBSECTION_LINE.test(h);
+        return `<div style="font-size:12px; padding:3px 0; padding-left:${isSub ? "16px" : "0"}; font-weight:${isSub ? "400" : "600"};">${h}</div>`;
+      }).join("")}
+    </div>
+  `;
 }
 
 async function handleImportDocument(e) {
@@ -667,6 +774,7 @@ function render() {
   `;
   bindAppForms();
   renderHelpWidget();
+  if (state.view === "report_generate") updateIndexPreview();
 }
 
 function errorHtml() {
@@ -1089,12 +1197,29 @@ function viewReportGenerate() {
       <h2>${state.activeReport.title}</h2>
       <p class="subtitle">Descreva o que você observou, ou cole o laudo inteiro já escrito — a IA reformula/completa em linguagem técnica, sem inventar fatos que você não escreveu</p>
       ${errorHtml()}
+      <div class="card" style="background: var(--bg); margin-bottom:14px;">
+        <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Montar índice do laudo</p>
+        <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px;">Posicione o cursor no ponto do texto abaixo onde a seção deve começar, dê um título e clique em Incluir — a numeração (1, 2, 3... ou 7.1, 7.2...) é calculada automaticamente, no mesmo padrão do laudo modelo.</p>
+        <div class="row" style="gap:8px; align-items:flex-end; flex-wrap:wrap;">
+          <div style="flex:0 0 160px;">
+            <label style="font-size:11px;">Nível</label>
+            <select id="indexItemLevel">
+              <option value="section">Seção principal</option>
+              <option value="subsection">Subseção</option>
+            </select>
+          </div>
+          <div style="flex:1; min-width:200px;">
+            <label style="font-size:11px;">Título da seção</label>
+            <input id="indexItemTitle" placeholder="Ex: Sistema inadequado de drenagem de águas pluviais">
+          </div>
+          <button class="btn" type="button" style="height:38px; flex:0 0 auto;" onclick="handleInsertIndexItem()">Incluir no texto</button>
+        </div>
+        <div id="indexPreview" style="margin-top:10px;"></div>
+      </div>
       <form id="generateForm">
         <label>Observação (pode ser um parágrafo curto ou o texto completo do laudo)</label>
-        <textarea name="observation" rows="14" required placeholder="Escreva livremente: pode ser uma observação curta (ex: parede da sala com rachadura de uns 20cm perto da janela) ou o laudo inteiro já redigido, com todas as seções — não tem limite de tamanho."></textarea>
-        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Quanto mais detalhe você der, mais completo sai o texto — a IA nunca inventa fato que não esteja aqui.</p>
-        <label>Categorias do item (separadas por vírgula, opcional)</label>
-        <input name="item_categories" placeholder="Ex: paredes, infiltracao">
+        <textarea id="observationTextarea" name="observation" rows="14" required oninput="updateIndexPreview()" placeholder="Escreva livremente: pode ser uma observação curta (ex: parede da sala com rachadura de uns 20cm perto da janela) ou o laudo inteiro já redigido, com todas as seções — não tem limite de tamanho."></textarea>
+        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Quanto mais detalhe você der, mais completo sai o texto — a IA nunca inventa fato que não esteja aqui. Não há limite de tamanho.</p>
         <div style="margin-top:16px;">
           <button class="btn primary" type="submit">Gerar com IA</button>
         </div>

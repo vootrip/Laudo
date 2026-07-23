@@ -26,7 +26,10 @@ app.use(cors());
 // registrada separadamente aqui, antes do parser JSON padrão.
 app.use("/billing", billingRoutes);
 
-app.use(express.json());
+// Limite elevado porque o campo de observação do laudo aceita colar o
+// documento inteiro (sem limite de caracteres) — o padrão do Express
+// (100kb) cortaria laudos longos antes mesmo de chegar na rota.
+app.use(express.json({ limit: "5mb" }));
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
