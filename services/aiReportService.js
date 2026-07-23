@@ -120,7 +120,7 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 8192,
+      max_tokens: 16000,
       system: systemPrompt,
       messages: [{ role: "user", content: `Observação do engenheiro: "${rawObservation}"` }],
     }),
@@ -132,6 +132,17 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
   }
 
   const data = await response.json();
+
+  // Texto de entrada longo (ex: laudo inteiro colado) pode gerar uma saída
+  // grande o bastante para estourar o teto de tokens, cortando o JSON pela
+  // metade — melhor avisar o engenheiro do que devolver um resultado quebrado.
+  if (data.stop_reason === "max_tokens") {
+    throw Object.assign(
+      new Error("O texto é longo demais para a IA processar de uma vez. Tente gerar em partes menores, ou use 'Organizar em seções automaticamente' após colar o texto sem reformulação."),
+      { statusCode: 413 }
+    );
+  }
+
   const textBlock = data.content.find((c) => c.type === "text");
   const rawText = textBlock.text.replace(/```json|```/g, "").trim();
 
