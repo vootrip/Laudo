@@ -213,6 +213,8 @@ const state = {
   helpSubmitting: false,
   pendingPhotoLocation: null,
   reportSections: [],
+  officeProfile: null,
+  profileSaved: false,
 };
 
 function setToken(token, engineer) {
@@ -401,6 +403,47 @@ async function handleCreateProject(e) {
 // =====================================================================
 // Ações — laudos
 // =====================================================================
+// ---------------------------------------------------------------
+// Perfil do escritório — dados que aparecem automaticamente no
+// rodapé de TODAS as páginas de qualquer laudo gerado (nome, título
+// profissional, endereço, telefone, e-mail). Preenchido uma vez
+// aqui, nunca precisa ser digitado de novo em cada laudo.
+// ---------------------------------------------------------------
+async function goToOfficeProfile() {
+  try {
+    const profile = await api("/auth/me");
+    state.officeProfile = profile;
+    state.profileSaved = false;
+    goTo("office_profile");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleUpdateProfile(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const updated = await api("/auth/profile", {
+      method: "PATCH",
+      body: JSON.stringify({
+        company_name: f.company_name.value,
+        professional_title: f.professional_title.value,
+        office_address: f.office_address.value,
+        office_phone: f.office_phone.value,
+      }),
+    });
+    state.officeProfile = { ...state.officeProfile, ...updated };
+    state.error = null;
+    state.profileSaved = true;
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
 async function handleCreateReport(e) {
   e.preventDefault();
   const f = e.target;
@@ -963,6 +1006,7 @@ function render() {
     case "report_review": content = viewReportReview(); break;
     case "report_done": content = viewReportDone(); break;
     case "upgrade": content = viewUpgrade(); break;
+    case "office_profile": content = viewOfficeProfile(); break;
     default: content = viewDashboard();
   }
 
@@ -971,6 +1015,7 @@ function render() {
       <div class="brand">Laudo<span>Profi</span></div>
       <div class="user-info">
         ${state.engineer ? `${state.engineer.name} · plano ${state.engineer.plan}` : ""}
+        <button class="link" onclick="goToOfficeProfile()">Perfil do escritório</button>
         <button class="link" onclick="logout()">Sair</button>
       </div>
     </div>
@@ -1176,6 +1221,34 @@ function reportRowActions(r) {
   }
   actions.push(`<button class="btn" onclick="handleDuplicateReport('${r.id}')" title="Cria um novo laudo em rascunho com as mesmas seções">Duplicar</button>`);
   return actions.join(" ");
+}
+
+// ---------------------------------------------------------------
+// View: perfil do escritório (rodapé do PDF)
+// ---------------------------------------------------------------
+function viewOfficeProfile() {
+  const p = state.officeProfile || {};
+  return `
+    <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
+    <div class="card" style="margin-top:12px; max-width:520px;">
+      <h2>Perfil do escritório</h2>
+      <p class="subtitle">Esses dados aparecem automaticamente no rodapé de todas as páginas de qualquer laudo gerado — preencha uma vez aqui, não precisa mais digitar em cada laudo.</p>
+      ${errorHtml()}
+      ${state.profileSaved ? `<div class="info-box">✓ Perfil atualizado. Os próximos PDFs já saem com esses dados no rodapé.</div>` : ""}
+      <form id="officeProfileForm">
+        <label>Nome da empresa/escritório (opcional)</label>
+        <input name="company_name" value="${p.company_name || ""}" placeholder="Ex: Prado Engenharia">
+        <label>Título profissional (aparece em negrito, logo abaixo do nome)</label>
+        <input name="professional_title" value="${p.professional_title || ""}" placeholder="Ex: Perito Judicial - MSc. Eng. Civil e Eng. Segurança do Trabalho">
+        <label>Endereço do escritório</label>
+        <input name="office_address" value="${p.office_address || ""}" placeholder="Ex: Rua Dário João de Souza nº 101 apto 304 – Jurerê, Florianópolis/SC">
+        <label>Telefone</label>
+        <input name="office_phone" value="${p.office_phone || ""}" placeholder="Ex: (48) 98823-4552">
+        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">O nome (${p.name || "—"}) e o e-mail (${p.email || "—"}) vêm do seu cadastro — pra alterá-los, fale com o suporte.</p>
+        <div style="margin-top:16px;"><button class="btn primary" type="submit">Salvar</button></div>
+      </form>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------
@@ -1608,6 +1681,7 @@ function bindAppForms() {
     importForm: handleImportDocument,
     importReviewForm: handleImportReview,
     photoUploadForm: handleUploadPhotos,
+    officeProfileForm: handleUpdateProfile,
   };
   Object.entries(map).forEach(([id, handler]) => {
     const el = document.getElementById(id);

@@ -1,255 +1,127 @@
 const express = require("express");
-const multer = require("multer");
-const mammoth = require("mammoth");
-const pdfParse = require("pdf-parse");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const pool = require("../db/pool");
-const { requireAuth } = require("../middleware/auth");
-const { checkPlanLimit } = require("../middleware/checkPlanLimit");
-const { generateTechnicalText, reviewImportedDocument } = require("../services/aiReportService");
-const { generateReportPdf } = require("../services/pdfService");
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
-router.use(requireAuth);
+// ---------------------------------------------------------------
+// POST /auth/register — cadastro de um novo engenheiro (tenant)
+// ---------------------------------------------------------------
+router.post("/register", async (req, res) => {
+  const { name, email, password, crea_number, crea_region, company_name } = req.body;
 
-router.post("/", checkPlanLimit, async (req, res) => {
-  const { project_id, template_id, title, art_number, raw_input_json } = req.body;
-
-  if (!project_id || !template_id || !title) {
-    return res.status(400).json({ error: "project_id, template_id e title são obrigatórios." });
+  if (!name || !email || !password || !crea_number || !crea_region) {
+    return res.status(400).json({ error: "Campos obrigatórios ausentes." });
   }
 
   try {
+    const existing = await pool.query("SELECT id FROM engineers WHERE email = $1", [email]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: "E-mail já cadastrado." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
     const result = await pool.query(
-      `INSERT INTO reports (engineer_id, project_id, template_id, title, art_number, raw_input_json, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'rascunho')
-       RETURNING *`,
-      [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}]
+      `INSERT INTO engineers (name, email, password_hash, crea_number, crea_region, company_name)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, email, plan`,
+      [name, email, passwordHash, crea_number, crea_region, company_name || null]
     );
-    res.status(201).json(result.rows[0]);
+
+    const engineer = result.rows[0];
+    const token = jwt.sign({ engineerId: engineer.id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
+
+    res.status(201).json({ engineer, token });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro ao criar laudo." });
+    res.status(500).json({ error: "Erro ao criar conta." });
   }
 });
 
-router.get("/:id", async (req, res) => {
+// ---------------------------------------------------------------
+// POST /auth/login
+// ---------------------------------------------------------------
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const result = await pool.query("SELECT * FROM engineers WHERE email = $1", [email]);
+    const engineer = result.rows[0];
+
+    if (!engineer) {
+      return res.status(401).json({ error: "E-mail ou senha inválidos." });
+    }
+
+    const validPassword = await bcrypt.compare(password, engineer.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: "E-mail ou senha inválidos." });
+    }
+
+    const token = jwt.sign({ engineerId: engineer.id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
+
+    res.json({
+      engineer: { id: engineer.id, name: engineer.name, email: engineer.email, plan: engineer.plan },
+      token,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao fazer login." });
+  }
+});
+
+// ---------------------------------------------------------------
+// GET /auth/me — dados do engenheiro autenticado
+// ---------------------------------------------------------------
+const { requireAuth } = require("../middleware/auth");
+
+router.get("/me", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
-      [req.params.id, req.engineerId]
+      `SELECT id, name, email, crea_number, crea_region, company_name,
+              logo_url, professional_title, office_address, office_phone, plan
+       FROM engineers WHERE id = $1`,
+      [req.engineerId]
     );
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
+      return res.status(404).json({ error: "Engenheiro não encontrado." });
     }
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro ao buscar laudo." });
+    res.status(500).json({ error: "Erro ao buscar perfil." });
   }
 });
 
-router.post("/:id/generate", async (req, res) => {
-  const { observation, item_categories } = req.body;
-
-  if (!observation) {
-    return res.status(400).json({ error: "Campo 'observation' é obrigatório." });
-  }
-
-  if (observation.length > 600) {
-    return res.status(400).json({
-      error: "Observação muito longa para este campo (máximo 600 caracteres). Se você já tem um documento pronto, use a importação de documento (.docx/.pdf) em vez deste campo.",
-    });
-  }
-
-  try {
-    const reportCheck = await pool.query(
-      "SELECT id FROM reports WHERE id = $1 AND engineer_id = $2",
-      [req.params.id, req.engineerId]
-    );
-    if (reportCheck.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
-
-    const aiResult = await generateTechnicalText(observation, item_categories || [], req.engineerId);
-
-    const updated = await pool.query(
-      `UPDATE reports
-       SET generated_content_json = $1,
-           technical_opinion_json = $2,
-           norm_references = $3,
-           status = 'rascunho',
-           updated_at = now()
-       WHERE id = $4
-       RETURNING *`,
-      [
-        JSON.stringify({ text: aiResult.generatedText }),
-        JSON.stringify({ text: aiResult.technicalOpinion }),
-        aiResult.citedNormCode ? [aiResult.citedNormCode] : [],
-        req.params.id,
-      ]
-    );
-
-    res.json({ report: updated.rows[0], ai: aiResult });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao gerar texto com IA: " + err.message });
-  }
-});
-
-router.patch("/:id/review", async (req, res) => {
-  const { edited_text, edited_opinion } = req.body;
-
+// ---------------------------------------------------------------
+// PATCH /auth/profile — edita dados do escritório, incluindo
+// endereço e telefone usados no rodapé de todas as páginas do PDF
+// (mesmo padrão do laudo real: nome, título, endereço, fone, e-mail)
+// ---------------------------------------------------------------
+router.patch("/profile", requireAuth, async (req, res) => {
+  const { company_name, professional_title, office_address, office_phone, logo_url } = req.body;
   try {
     const result = await pool.query(
-      `UPDATE reports
-       SET generated_content_json = jsonb_set(COALESCE(generated_content_json, '{}'::jsonb), '{text}', to_jsonb($1::text)),
-           technical_opinion_json = jsonb_set(COALESCE(technical_opinion_json, '{}'::jsonb), '{text}', to_jsonb($2::text)),
-           status = 'revisado',
+      `UPDATE engineers
+       SET company_name = COALESCE($1, company_name),
+           professional_title = COALESCE($2, professional_title),
+           office_address = COALESCE($3, office_address),
+           office_phone = COALESCE($4, office_phone),
+           logo_url = COALESCE($5, logo_url),
            updated_at = now()
-       WHERE id = $3 AND engineer_id = $4
-       RETURNING *`,
-      [edited_text, edited_opinion || "", req.params.id, req.engineerId]
+       WHERE id = $6
+       RETURNING id, name, email, company_name, professional_title, office_address, office_phone, logo_url`,
+      [company_name, professional_title, office_address, office_phone, logo_url, req.engineerId]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
-
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro ao revisar laudo." });
-  }
-});
-
-router.post("/:id/import", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "Nenhum arquivo enviado." });
-  }
-
-  try {
-    let rawText;
-    if (req.file.mimetype === "application/pdf") {
-      const data = await pdfParse(req.file.buffer);
-      rawText = data.text;
-    } else if (
-      req.file.mimetype ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-      const result = await mammoth.extractRawText({ buffer: req.file.buffer });
-      rawText = result.value;
-    } else {
-      return res.status(400).json({ error: "Formato não suportado. Envie .docx ou .pdf." });
-    }
-
-    const templateResult = await pool.query(
-      "SELECT type FROM report_templates WHERE id = (SELECT template_id FROM reports WHERE id = $1)",
-      [req.params.id]
-    );
-    const templateType = templateResult.rows[0]?.type || "vistoria";
-    const review = await reviewImportedDocument(rawText, templateType);
-
-    const updated = await pool.query(
-      `UPDATE reports
-       SET source_type = 'documento_importado',
-           raw_input_json = $1,
-           generated_content_json = $2,
-           completeness_check_json = $3,
-           status = 'rascunho',
-           updated_at = now()
-       WHERE id = $4 AND engineer_id = $5
-       RETURNING *`,
-      [
-        JSON.stringify({ imported_raw_text: rawText }),
-        JSON.stringify({ text: review.corrected_text }),
-        JSON.stringify({ missing_items: review.missing_items, incomplete_items: review.incomplete_items }),
-        req.params.id,
-        req.engineerId,
-      ]
-    );
-
-    if (updated.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
-
-    res.json({ report: updated.rows[0], review });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao importar documento: " + err.message });
-  }
-});
-
-router.get("/:id/pdf", async (req, res) => {
-  try {
-    const reportResult = await pool.query(
-      "SELECT * FROM reports WHERE id = $1 AND engineer_id = $2",
-      [req.params.id, req.engineerId]
-    );
-    if (reportResult.rows.length === 0) {
-      return res.status(404).json({ error: "Laudo não encontrado." });
-    }
-    const report = reportResult.rows[0];
-
-    const engineerResult = await pool.query(
-      "SELECT name, company_name, crea_number, crea_region, logo_url FROM engineers WHERE id = $1",
-      [req.engineerId]
-    );
-    const engineer = engineerResult.rows[0];
-
-    const projectResult = await pool.query(
-      `SELECT p.address, p.building_name, c.name AS client_name
-       FROM projects p JOIN clients c ON c.id = p.client_id
-       WHERE p.id = $1`,
-      [report.project_id]
-    );
-    const project = projectResult.rows[0] || {};
-
-    const photosResult = await pool.query(
-      "SELECT url, caption FROM report_photos WHERE report_id = $1 ORDER BY display_order",
-      [report.id]
-    );
-    const photos = photosResult.rows;
-
-    let norms = [];
-    if (report.norm_references && report.norm_references.length > 0) {
-      const normsResult = await pool.query(
-        "SELECT code, title FROM technical_norms WHERE code = ANY($1)",
-        [report.norm_references]
-      );
-      norms = normsResult.rows;
-    }
-
-    const pdfBuffer = await generateReportPdf({
-      engineer,
-      project: { address: project.address, building_name: project.building_name },
-      client: { name: project.client_name },
-      report,
-      norms,
-      photos,
-      photoCount: photos.length,
-    });
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="laudo-${report.id}.pdf"`);
-    res.send(pdfBuffer);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao gerar PDF: " + err.message });
-  }
-});
-
-router.get("/", async (req, res) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, title, status, source_type, created_at FROM reports WHERE engineer_id = $1 ORDER BY created_at DESC",
-      [req.engineerId]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao listar laudos." });
+    res.status(500).json({ error: "Erro ao atualizar perfil." });
   }
 });
 
