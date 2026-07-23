@@ -272,7 +272,7 @@ router.get("/:id/pdf", async (req, res) => {
     // Buffer, não da data URI crua) e o vínculo de seção/subseção,
     // para o PDF numerar e posicionar cada figura corretamente.
     const photosResult = await pool.query(
-      "SELECT url, caption, display_order, section_id, subsection_id FROM report_photos WHERE report_id = $1 ORDER BY display_order",
+      "SELECT url, caption, display_order, section_id, subsection_id, latitude, longitude, captured_at FROM report_photos WHERE report_id = $1 ORDER BY display_order",
       [report.id]
     );
     const photos = photosResult.rows.map((p) => {
