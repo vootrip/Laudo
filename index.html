@@ -70,6 +70,28 @@
   }
   textarea { resize: vertical; }
 
+  .rich-toolbar {
+    display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+    padding: 6px; border: 1px solid var(--border); border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0; background: #fff;
+  }
+  .rich-toolbar button {
+    width: auto; padding: 5px 9px; font-size: 13px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; cursor: pointer; color: var(--text);
+  }
+  .rich-toolbar button:hover { background: var(--bg); }
+  .rich-toolbar select { width: auto; padding: 5px 6px; font-size: 12px; }
+  .rich-toolbar input[type="color"] { width: 32px; padding: 2px; cursor: pointer; }
+  .rich-editor {
+    min-height: 260px; max-height: 560px; overflow-y: auto;
+    padding: 10px 12px; border: 1px solid var(--border); border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius); background: var(--surface);
+    font-size: 14px; line-height: 1.5; color: var(--text);
+  }
+  .rich-editor:focus { outline: 2px solid #00000022; }
+  .rich-editor:empty:before { content: attr(data-placeholder); color: var(--text-muted); }
+  .rich-editor ul, .rich-editor ol { margin: 4px 0 4px 20px; }
+
   button.btn {
     padding: 10px 16px;
     border-radius: var(--radius);
@@ -410,6 +432,15 @@ async function handleCreateReport(e) {
 async function handleGenerate(e) {
   e.preventDefault();
   const f = e.target;
+  const editor = getObservationEditor();
+  const plainText = (editor.innerText || "").trim();
+
+  if (!plainText) {
+    state.error = "Descreva a observação antes de gerar com IA.";
+    render();
+    return;
+  }
+
   const btn = f.querySelector("button[type=submit]");
   btn.disabled = true;
   btn.textContent = "Gerando...";
@@ -417,7 +448,7 @@ async function handleGenerate(e) {
     const result = await api(`/reports/${state.activeReport.id}/generate`, {
       method: "POST",
       body: JSON.stringify({
-        observation: f.observation.value,
+        observation: plainText,
       }),
     });
     state.activeReport = result.report;
@@ -433,9 +464,141 @@ async function handleGenerate(e) {
 }
 
 // ---------------------------------------------------------------
+// Editor rico (negrito, itálico, sublinhado, fonte, tamanho, cor,
+// listas, alinhamento) para o campo de observação. Usa execCommand
+// para as operações padrão do navegador (bem suportadas) e um
+// wrapper manual via Range/Selection para fonte/tamanho/cor, o que
+// dá um <span style="..."> previsível — é exatamente esse padrão
+// que o parser de renderRichText no backend (pdfService.js) sabe
+// interpretar ao montar o PDF final.
+// ---------------------------------------------------------------
+let savedEditorRanges = {};
+
+function getObservationEditor() {
+  return document.getElementById("observationEditor");
+}
+
+function saveEditorSelection(editorId) {
+  const editor = document.getElementById(editorId);
+  const sel = window.getSelection();
+  if (!editor || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (editor.contains(range.commonAncestorContainer)) {
+    savedEditorRanges[editorId] = range.cloneRange();
+  }
+}
+
+function restoreEditorSelection(editorId) {
+  const range = savedEditorRanges[editorId];
+  if (!range) return;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function richExec(cmd, editorId, value) {
+  const editor = document.getElementById(editorId);
+  editor.focus();
+  restoreEditorSelection(editorId);
+  document.execCommand(cmd, false, value || null);
+  saveEditorSelection(editorId);
+  if (editorId === "observationEditor") updateIndexPreview();
+}
+
+function richWrapSelection(cssProp, cssValue, editorId) {
+  const editor = document.getElementById(editorId);
+  editor.focus();
+  restoreEditorSelection(editorId);
+  const sel = window.getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const span = document.createElement("span");
+  span.style[cssProp] = cssValue;
+  try {
+    range.surroundContents(span);
+  } catch (e) {
+    // Seleção cruza múltiplos elementos (ex: parte em negrito, parte não) —
+    // extrai o conteúdo inteiro e reembrulha no novo span
+    const frag = range.extractContents();
+    span.appendChild(frag);
+    range.insertNode(span);
+  }
+  sel.removeAllRanges();
+  const newRange = document.createRange();
+  newRange.selectNodeContents(span);
+  sel.addRange(newRange);
+  savedEditorRanges[editorId] = newRange.cloneRange();
+  if (editorId === "observationEditor") updateIndexPreview();
+}
+
+function richApplyFontFamily(family, editorId) {
+  if (!family) return;
+  richWrapSelection("fontFamily", family, editorId);
+}
+
+function richApplyFontSize(size, editorId) {
+  if (!size) return;
+  richWrapSelection("fontSize", `${size}pt`, editorId);
+}
+
+function richApplyColor(hex, editorId) {
+  richWrapSelection("color", hex, editorId);
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Barra de formatação reutilizável — usada no campo de observação e nos
+// dois campos da tela de revisão final, sempre operando sobre o editor
+// (contenteditable) identificado por editorId.
+function richToolbarHtml(editorId) {
+  return `
+    <div class="rich-toolbar">
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('bold','${editorId}')" title="Negrito"><b>B</b></button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('italic','${editorId}')" title="Itálico"><i>I</i></button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('underline','${editorId}')" title="Sublinhado"><u>S</u></button>
+      <select onchange="richApplyFontFamily(this.value,'${editorId}'); this.selectedIndex=0;" title="Fonte">
+        <option value="" disabled selected>Fonte</option>
+        <option value="Helvetica">Helvetica</option>
+        <option value="Times New Roman">Times New Roman</option>
+        <option value="Courier New">Courier New</option>
+      </select>
+      <select onchange="richApplyFontSize(this.value,'${editorId}'); this.selectedIndex=0;" title="Tamanho da letra">
+        <option value="" disabled selected>Tamanho</option>
+        <option value="9">9</option>
+        <option value="10">10</option>
+        <option value="10.5">10.5 (padrão)</option>
+        <option value="11">11</option>
+        <option value="12">12</option>
+        <option value="14">14</option>
+        <option value="16">16</option>
+        <option value="18">18</option>
+        <option value="20">20</option>
+        <option value="24">24</option>
+      </select>
+      <input type="color" value="#2C2C2A" onchange="richApplyColor(this.value,'${editorId}')" title="Cor do texto">
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('insertUnorderedList','${editorId}')" title="Lista com marcadores">• Lista</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('insertOrderedList','${editorId}')" title="Lista numerada">1. Lista</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('justifyLeft','${editorId}')" title="Alinhar à esquerda">⟸</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('justifyCenter','${editorId}')" title="Centralizar">≡</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('justifyRight','${editorId}')" title="Alinhar à direita">⟹</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('justifyFull','${editorId}')" title="Justificar">☰</button>
+      <button type="button" onmousedown="event.preventDefault()" onclick="richExec('removeFormat','${editorId}')" title="Limpar formatação">✕ Limpar</button>
+    </div>
+  `;
+}
+
+function richEditorHtml(editorId, placeholder, initialHtml, extraOninput) {
+  return `<div id="${editorId}" class="rich-editor" contenteditable="true" data-placeholder="${escapeHtml(placeholder)}" oninput="${extraOninput || ""}" onmouseup="saveEditorSelection('${editorId}')" onkeyup="saveEditorSelection('${editorId}')">${initialHtml || ""}</div>`;
+}
+
+// ---------------------------------------------------------------
 // Índice do laudo — o engenheiro digita um título de seção, escolhe o
 // nível (seção principal ou subseção) e clica em Incluir: o marcador é
-// inserido no ponto do cursor dentro do textarea de observação, com a
+// inserido no ponto do cursor dentro do editor de observação, com a
 // numeração calculada automaticamente a partir do que já existe no
 // texto — no mesmo padrão do laudo modelo ("7) Título" para seções,
 // "7.1 Título" para subseções). Não é uma tabela separada: o marcador
@@ -451,13 +614,14 @@ function computeNextIndexNumbers(text) {
   let lastSubForLastSection = 0;
 
   for (const line of lines) {
-    const sectionMatch = line.match(INDEX_SECTION_LINE);
+    const trimmed = line.trim();
+    const sectionMatch = trimmed.match(INDEX_SECTION_LINE);
     if (sectionMatch) {
       lastSection = parseInt(sectionMatch[1], 10);
       lastSubForLastSection = 0;
       continue;
     }
-    const subMatch = line.match(INDEX_SUBSECTION_LINE);
+    const subMatch = trimmed.match(INDEX_SUBSECTION_LINE);
     if (subMatch && parseInt(subMatch[1], 10) === lastSection) {
       lastSubForLastSection = Math.max(lastSubForLastSection, parseInt(subMatch[2], 10));
     }
@@ -471,7 +635,7 @@ function computeNextIndexNumbers(text) {
 }
 
 function handleInsertIndexItem() {
-  const textarea = document.getElementById("observationTextarea");
+  const editor = getObservationEditor();
   const titleInput = document.getElementById("indexItemTitle");
   const level = document.getElementById("indexItemLevel").value;
   const title = titleInput.value.trim();
@@ -481,34 +645,31 @@ function handleInsertIndexItem() {
     return;
   }
 
-  const cursorPos = textarea.selectionStart ?? textarea.value.length;
-  const before = textarea.value.slice(0, cursorPos);
-  const after = textarea.value.slice(cursorPos);
-
-  const { nextSection, nextSubsection, hasSection } = computeNextIndexNumbers(before);
+  // Numeração calculada sobre o texto inteiro já digitado (não só antes do
+  // cursor) — o fluxo natural é ir clicando em Incluir na ordem em que as
+  // seções aparecem no laudo, então isso é mais robusto que tentar recortar
+  // o texto em torno de um ponto específico dentro de um editor rico.
+  const wholeText = editor.innerText || "";
+  const { nextSection, nextSubsection, hasSection } = computeNextIndexNumbers(wholeText);
 
   if (level === "subsection" && !hasSection) {
     // Não usa render() aqui de propósito: isso substituiria o HTML inteiro
-    // da tela e descartaria o que já foi digitado no textarea (o conteúdo
+    // da tela e descartaria o que já foi digitado no editor (o conteúdo
     // dele só existe no DOM, não é sincronizado com o state a cada tecla).
     alert("Inclua uma seção principal antes de adicionar uma subseção.");
     return;
   }
 
-  const heading = level === "section" ? `${nextSection}) ${title}` : `${nextSubsection} ${title}`;
+  const headingText = level === "section" ? `${nextSection}) ${title}` : `${nextSubsection} ${title}`;
+  const fontSize = level === "section" ? "13pt" : "11.5pt";
 
-  // Garante linhas em branco separando o novo cabeçalho do texto ao redor,
-  // sem duplicar quebras de linha se já existirem
-  const needsLeadingBreak = before.length > 0 && !before.endsWith("\n\n");
-  const leading = before.length === 0 ? "" : (needsLeadingBreak ? (before.endsWith("\n") ? "\n" : "\n\n") : "");
-  const insertion = `${leading}${heading}\n`;
-
-  textarea.value = before + insertion + after;
-  const newCursorPos = (before + insertion).length;
-  textarea.focus();
-  textarea.setSelectionRange(newCursorPos, newCursorPos);
+  editor.focus();
+  restoreEditorSelection("observationEditor");
+  const html = `<div><b style="font-size:${fontSize}">${escapeHtml(headingText)}</b></div><div><br></div>`;
+  document.execCommand("insertHTML", false, html);
 
   titleInput.value = "";
+  saveEditorSelection("observationEditor");
   updateIndexPreview();
 }
 
@@ -519,11 +680,11 @@ function extractIndexHeadings(text) {
 }
 
 function updateIndexPreview() {
-  const textarea = document.getElementById("observationTextarea");
+  const editor = getObservationEditor();
   const preview = document.getElementById("indexPreview");
-  if (!textarea || !preview) return;
+  if (!editor || !preview) return;
 
-  const headings = extractIndexHeadings(textarea.value);
+  const headings = extractIndexHeadings(editor.innerText || "");
   if (headings.length === 0) {
     preview.innerHTML = `<p style="font-size:11px; color:var(--text-muted); margin:0;">Nenhum item de índice ainda — inclua o primeiro acima.</p>`;
     return;
@@ -538,6 +699,38 @@ function updateIndexPreview() {
       }).join("")}
     </div>
   `;
+}
+
+async function handleUseFormattedText() {
+  const editor = getObservationEditor();
+  const html = editor.innerHTML;
+  const plainCheck = (editor.innerText || "").trim();
+
+  if (!plainCheck) {
+    state.error = "Escreva o texto antes de usar sem IA.";
+    render();
+    return;
+  }
+
+  const btn = document.getElementById("useFormattedTextBtn");
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Salvando...";
+  try {
+    const result = await api(`/reports/${state.activeReport.id}/use-formatted-text`, {
+      method: "POST",
+      body: JSON.stringify({ html }),
+    });
+    state.activeReport = result.report;
+    state.lastAiResult = null;
+    goTo("report_review");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 async function handleImportDocument(e) {
@@ -599,11 +792,22 @@ async function handleImportReview(e) {
 
 async function handleReview(e) {
   e.preventDefault();
-  const f = e.target;
+  const editedText = document.getElementById("reviewDiagnosticEditor").innerHTML.trim();
+  const editedOpinion = document.getElementById("reviewOpinionEditor").innerHTML.trim();
+
+  if (!document.getElementById("reviewDiagnosticEditor").innerText.trim()) {
+    alert("O diagnóstico não pode ficar vazio.");
+    return;
+  }
+  if (!document.getElementById("reviewOpinionEditor").innerText.trim()) {
+    alert("O parecer técnico não pode ficar vazio.");
+    return;
+  }
+
   try {
     const updated = await api(`/reports/${state.activeReport.id}/review`, {
       method: "PATCH",
-      body: JSON.stringify({ edited_text: f.edited_text.value, edited_opinion: f.edited_opinion.value }),
+      body: JSON.stringify({ edited_text: editedText, edited_opinion: editedOpinion }),
     });
     state.activeReport = updated;
     await loadDashboardData();
@@ -774,6 +978,9 @@ function render() {
   `;
   bindAppForms();
   renderHelpWidget();
+  if (state.view === "report_generate" || state.view === "report_review") {
+    try { document.execCommand("styleWithCSS", false, true); } catch (e) {}
+  }
   if (state.view === "report_generate") updateIndexPreview();
 }
 
@@ -1216,13 +1423,16 @@ function viewReportGenerate() {
         </div>
         <div id="indexPreview" style="margin-top:10px;"></div>
       </div>
+      <label>Observação (pode ser um parágrafo curto ou o texto completo do laudo)</label>
+      ${richToolbarHtml("observationEditor")}
+      ${richEditorHtml("observationEditor", "Escreva livremente: pode ser uma observação curta (ex: parede da sala com rachadura de uns 20cm perto da janela) ou o laudo inteiro já redigido, com todas as seções — não tem limite de tamanho.", "", "updateIndexPreview()")}
+      <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Quanto mais detalhe você der, mais completo sai o texto — a IA nunca inventa fato que não esteja aqui. Não há limite de tamanho.</p>
       <form id="generateForm">
-        <label>Observação (pode ser um parágrafo curto ou o texto completo do laudo)</label>
-        <textarea id="observationTextarea" name="observation" rows="14" required oninput="updateIndexPreview()" placeholder="Escreva livremente: pode ser uma observação curta (ex: parede da sala com rachadura de uns 20cm perto da janela) ou o laudo inteiro já redigido, com todas as seções — não tem limite de tamanho."></textarea>
-        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Quanto mais detalhe você der, mais completo sai o texto — a IA nunca inventa fato que não esteja aqui. Não há limite de tamanho.</p>
-        <div style="margin-top:16px;">
+        <div style="margin-top:16px; display:flex; gap:8px; flex-wrap:wrap;">
           <button class="btn primary" type="submit">Gerar com IA</button>
+          <button id="useFormattedTextBtn" class="btn" type="button" onclick="handleUseFormattedText()">Usar este texto como está (sem IA)</button>
         </div>
+        <p style="font-size:11px; color:var(--text-muted); margin:6px 0 0;">"Usar este texto como está" pula a reescrita da IA e leva exatamente o que você escreveu — com toda a formatação — direto pra revisão final e pro PDF. Use quando o texto já estiver pronto do jeito que você quer entregar.</p>
       </form>
     </div>
 
@@ -1253,8 +1463,18 @@ function viewReportGenerate() {
   `;
 }
 
+function toEditorInitialHtml(content) {
+  if (!content) return "";
+  // Se já tem tags (veio do editor rico, ex: fluxo "usar sem IA"), injeta
+  // como está. Se é texto puro (ex: saída da IA, sempre em prosa simples),
+  // escapa e preserva quebras de linha manualmente.
+  return content.includes("<") ? content : escapeHtml(content).replace(/\n/g, "<br>");
+}
+
 function viewReportReview() {
   const ai = state.lastAiResult;
+  const diagnosticContent = toEditorInitialHtml(state.activeReport.generated_content_json.text || "");
+  const opinionContent = toEditorInitialHtml(state.activeReport.technical_opinion_json?.text || ai?.technicalOpinion || "");
   return `
     <div class="card">
       <h2>Revisar texto do laudo</h2>
@@ -1263,9 +1483,11 @@ function viewReportReview() {
       ${ai && ai.citedNormCode ? `<div class="info-box">Norma citada: ${ai.citedNormCode}</div>` : ""}
       <form id="reviewForm">
         <label>Vistoria e diagnóstico (editável antes de confirmar)</label>
-        <textarea name="edited_text" rows="6" required>${state.activeReport.generated_content_json.text}</textarea>
-        <label>Parecer técnico conclusivo (editável antes de confirmar)</label>
-        <textarea name="edited_opinion" rows="4" required>${state.activeReport.technical_opinion_json?.text || ai?.technicalOpinion || ""}</textarea>
+        ${richToolbarHtml("reviewDiagnosticEditor")}
+        ${richEditorHtml("reviewDiagnosticEditor", "Descrição técnica do diagnóstico...", diagnosticContent)}
+        <label style="margin-top:14px;">Parecer técnico conclusivo (editável antes de confirmar)</label>
+        ${richToolbarHtml("reviewOpinionEditor")}
+        ${richEditorHtml("reviewOpinionEditor", "Parecer conclusivo...", opinionContent)}
         <div style="margin-top:16px; display:flex; gap:8px;">
           <button type="button" class="btn" onclick="goTo('report_generate')">Gerar novamente</button>
           <button class="btn primary" type="submit">Confirmar revisão</button>
