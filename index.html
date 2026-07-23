@@ -184,6 +184,7 @@ const state = {
   reportSearch: "",
   intendedPlan: new URLSearchParams(window.location.search).get("plan"),
   publicPlans: [],
+  publicPlansError: null,
   helpOpen: false,
   helpTab: "new", // "new" | "history"
   helpTickets: [],
@@ -244,9 +245,9 @@ async function handleRegister(e) {
     const data = await api("/auth/register", {
       method: "POST",
       body: JSON.stringify({
-        name: f.name.value,
-        email: f.email.value,
-        password: f.password.value,
+        name: f.signup_name.value,
+        email: f.signup_email.value,
+        password: f.signup_password.value,
         crea_number: f.crea_number.value,
         crea_region: f.crea_region.value,
         company_name: f.company_name.value,
@@ -705,11 +706,11 @@ function viewRegister() {
         ${errorHtml()}
         <form id="registerForm" autocomplete="off">
           <label>Nome completo</label>
-          <input name="name" autocomplete="off" required>
+          <input name="signup_name" autocomplete="off" required>
           <label>E-mail</label>
-          <input name="email" type="email" autocomplete="off" required>
+          <input name="signup_email" type="email" autocomplete="off" required>
           <label>Senha</label>
-          <input name="password" type="password" autocomplete="new-password" required minlength="6">
+          <input name="signup_password" type="password" autocomplete="new-password" required minlength="6">
           <div class="row">
             <div>
               <label>Número do CREA</label>
@@ -1148,11 +1149,12 @@ function viewReportDone() {
 // ---------------------------------------------------------------
 async function loadPublicPlans() {
   if (state.publicPlans.length > 0) return;
+  state.publicPlansError = null;
   try {
     state.publicPlans = await api("/public/plans");
   } catch (err) {
-    // Não bloqueia a navegação por causa disso — tela mostra erro discreto
     console.error(err);
+    state.publicPlansError = "Não foi possível carregar os planos agora. Tente recarregar a página.";
   }
 }
 
@@ -1166,7 +1168,12 @@ function viewUpgrade() {
           <p class="subtitle" style="margin-bottom:12px;">Até ${p.laudos_included} laudos por mês</p>
           <button class="btn primary" style="width:100%;" onclick="handleCheckout('${p.plan_code}')">Assinar ${p.display_name}</button>
         </div>`).join("")
-    : `<p class="subtitle">Carregando planos...</p>`;
+    : state.publicPlansError
+      ? `<div class="card" style="text-align:center;">
+          <p class="subtitle" style="color:var(--danger-text, #791F1F);">${state.publicPlansError}</p>
+          <button class="btn" onclick="loadPublicPlans().then(render)">Tentar de novo</button>
+        </div>`
+      : `<p class="subtitle">Carregando planos...</p>`;
 
   return `
     <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
