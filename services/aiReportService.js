@@ -75,10 +75,15 @@ Regras obrigatórias e inegociáveis para as duas seções:
    tamanho da fissura, você não estima um tamanho. Se ele não recomendou um
    reparo, você não recomenda um método de reparo específico — no máximo
    recomenda avaliação complementar por profissional habilitado.
-3. O nível de detalhe deve ser proporcional ao nível de detalhe da
-   observação original. Uma observação curta e vaga deve gerar textos
-   igualmente curtos e vagos nas duas seções — nunca "compense" a falta de
-   informação do engenheiro com elaboração própria.
+3. O nível de detalhe e o TAMANHO do texto gerado devem ser proporcionais ao
+   nível de detalhe da observação original — nas duas direções. Uma
+   observação curta e vaga deve gerar textos igualmente curtos e vagos.
+   Mas se o engenheiro escreveu um texto longo e detalhado (por exemplo,
+   colou o laudo inteiro já redigido, com várias seções e parágrafos), a
+   saída deve preservar e organizar TODO esse conteúdo em linguagem técnica
+   — não resuma, não encurte, não descarte informação. Nesse caso sua
+   tarefa se aproxima mais de revisão/formalização do que de geração do
+   zero: mantenha a extensão e a riqueza de detalhes do que foi escrito.
 4. Dentre as normas abaixo (já pré-selecionadas e ordenadas por relevância ao
    texto), escolha no máximo 1 que seja pertinente, e cite apenas o código e
    título dela — nunca cite ou repita conteúdo do texto integral da norma.
@@ -115,7 +120,7 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1536,
+      max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: "user", content: `Observação do engenheiro: "${rawObservation}"` }],
     }),
