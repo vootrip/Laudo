@@ -43,6 +43,16 @@ function drawFooter(doc, engineer, pageWidth) {
     .text(parts.join("\n"), 56, 772, { width: pageWidth, align: "center", lineGap: 1 });
 }
 
+function formatFigureCaption(label, photo) {
+  let text = label;
+  if (photo.caption) text += `: ${photo.caption}`;
+  if (photo.latitude != null && photo.longitude != null) {
+    const coords = `${photo.latitude.toFixed(6)}, ${photo.longitude.toFixed(6)}`;
+    text += ` — Coordenada de captura: ${coords}`;
+  }
+  return text;
+}
+
 function generateReportPdf({
   engineer,
   project,
@@ -132,7 +142,7 @@ function generateReportPdf({
         doc
           .fontSize(9)
           .fillColor("#6B6A64")
-          .text(`${label}${photo.caption ? ": " + photo.caption : ""}`, { align: "center" })
+          .text(formatFigureCaption(label, photo), { align: "center" })
           .moveDown(0.8);
       });
     };
@@ -213,7 +223,7 @@ function generateReportPdf({
         doc
           .fontSize(9)
           .fillColor("#6B6A64")
-          .text(`${label}${photo.caption ? ": " + photo.caption : ""}`, { align: "center" })
+          .text(formatFigureCaption(label, photo), { align: "center" })
           .moveDown(0.8);
       });
     }
