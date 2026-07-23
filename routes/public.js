@@ -18,6 +18,7 @@
  */
 
 const express = require("express");
+const pool = require("../db/pool");
 const router = express.Router();
 
 const RATE_LIMIT_MAX_REQUESTS = 5;
@@ -91,6 +92,24 @@ Responda APENAS em JSON, sem markdown, com o campo "generated_text".`;
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao gerar demonstração." });
+  }
+});
+
+// ---------------------------------------------------------------
+// GET /public/plans — planos e preços públicos, para a landing
+// page e a tela de upgrade do app puxarem do banco em vez de
+// hardcodear preço em dois lugares (que dessincroniza fácil).
+// ---------------------------------------------------------------
+router.get("/plans", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT plan_code, display_name, laudos_included, billing_period, price_cents, allows_signature
+       FROM plan_limits ORDER BY price_cents`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao listar planos." });
   }
 });
 
