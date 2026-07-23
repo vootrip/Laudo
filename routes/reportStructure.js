@@ -4,6 +4,7 @@ const { requireAuth } = require("../middleware/auth");
 const { assertEditable } = require("../middleware/reportGuards");
 const { createNewVersion } = require("../services/reportVersionService");
 const { checkPlanLimit } = require("../middleware/checkPlanLimit");
+const { structureReportSections } = require("../services/aiReportService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -772,6 +773,97 @@ router.post("/:id/duplicate", checkPlanLimit, async (req, res) => {
     res.status(500).json({ error: "Erro ao duplicar laudo." });
   } finally {
     client.release();
+  }
+});
+
+// =================================================================
+// ORGANIZAR EM SEÇÕES AUTOMATICAMENTE
+// =================================================================
+
+// POST /reports/:id/structure-sections — pega o texto atual do laudo
+// (generated_content_json.text, ou um texto customizado enviado no
+// body) e usa IA só para IDENTIFICAR a estrutura (não reescrever),
+// distribuindo em report_sections/report_subsections. Se o laudo já
+// tinha seções de uma tentativa anterior, elas são substituídas (não
+// acumula duplicado a cada clique).
+router.post("/:id/structure-sections", async (req, res) => {
+  try {
+    const report = await assertEditable(req, res, req.params.id);
+    if (!report) return;
+
+    const sourceText = req.body.raw_text || report.generated_content_json?.text;
+    if (!sourceText || sourceText.trim().length < 20) {
+      return res.status(400).json({
+        error: "Não há texto suficiente para organizar em seções. Gere ou cole o texto do laudo primeiro.",
+      });
+    }
+
+    const sections = await structureReportSections(sourceText);
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Remove seções antigas antes de gravar as novas (cascata já apaga
+      // as subseções junto) — evita duplicar se o engenheiro clicar de novo
+      await client.query("DELETE FROM report_sections WHERE report_id = $1", [req.params.id]);
+
+      let sectionOrder = 0;
+      for (const section of sections) {
+        if (!section.section_number || !section.section_title) continue;
+
+        const sectionResult = await client.query(
+          `INSERT INTO report_sections (report_id, section_number, section_title, content_text, order_index)
+           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [req.params.id, section.section_number, section.section_title, section.content_text || null, sectionOrder]
+        );
+        sectionOrder += 1;
+
+        let subOrder = 0;
+        for (const sub of section.subsections || []) {
+          if (!sub.subsection_number || !sub.subsection_title) continue;
+          await client.query(
+            `INSERT INTO report_subsections (section_id, subsection_number, subsection_title, content_text, order_index)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [sectionResult.rows[0].id, sub.subsection_number, sub.subsection_title, sub.content_text || null, subOrder]
+          );
+          subOrder += 1;
+        }
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Devolve já no formato aninhado, pronto pro frontend exibir
+    const sectionsResult = await pool.query(
+      `SELECT id, section_number, section_title, content_text, order_index
+       FROM report_sections WHERE report_id = $1 ORDER BY order_index`,
+      [req.params.id]
+    );
+    const subsectionsResult = await pool.query(
+      `SELECT rs.id, rs.section_id, rs.subsection_number, rs.subsection_title, rs.content_text, rs.order_index
+       FROM report_subsections rs
+       JOIN report_sections s ON s.id = rs.section_id
+       WHERE s.report_id = $1 ORDER BY rs.order_index`,
+      [req.params.id]
+    );
+    const nested = sectionsResult.rows.map((s) => ({
+      ...s,
+      subsections: subsectionsResult.rows.filter((sub) => sub.section_id === s.id),
+    }));
+
+    res.status(201).json(nested);
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    console.error(err);
+    res.status(500).json({ error: err.message || "Erro ao organizar laudo em seções." });
   }
 });
 

@@ -190,6 +190,7 @@ const state = {
   helpTickets: [],
   helpSubmitting: false,
   pendingPhotoLocation: null,
+  reportSections: [],
 };
 
 function setToken(token, engineer) {
@@ -392,6 +393,8 @@ async function handleCreateReport(e) {
       }),
     });
     state.activeReport = report;
+    state.reportSections = [];
+    state.reportPhotos = [];
     goTo("report_choose_source");
   } catch (err) {
     if (err.status === 402) {
@@ -791,10 +794,30 @@ async function handleSignReport(reportId) {
   try {
     await api(`/reports/${reportId}/sign`, { method: "POST", body: JSON.stringify({}) });
     await loadDashboardData();
+    goTo("dashboard");
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleStructureSections(btn) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Organizando...";
+  try {
+    const sections = await api(`/reports/${state.activeReport.id}/structure-sections`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.reportSections = sections;
     render();
   } catch (err) {
     state.error = err.message;
     render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 
@@ -1091,7 +1114,7 @@ function viewReportGenerate() {
         <div class="row" style="margin-top:16px; flex-wrap:wrap;">
           ${photos.map((p) => `
             <div style="max-width:140px;">
-              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}?token=${state.token}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
               <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
               ${p.latitude != null && p.longitude != null ? `
                 <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
@@ -1129,16 +1152,28 @@ function viewReportReview() {
 
 function viewReportDone() {
   const photos = state.reportPhotos || [];
+  const sections = state.reportSections || [];
   return `
     <div class="card">
       <h2>Laudo revisado ✓</h2>
-      <p class="subtitle">Seu laudo está pronto. Baixe o PDF ou volte ao painel.</p>
-      <div style="display:flex; gap:8px; margin-top:16px;">
-        <button class="btn primary" onclick="openPdf('${state.activeReport.id}')">Ver PDF</button>
+      <p class="subtitle">Confira a pré-visualização exata do PDF antes de assinar. Depois de assinado, o conteúdo fica travado.</p>
+      <div style="display:flex; gap:8px; margin-top:16px; flex-wrap:wrap;">
+        <button class="btn primary" onclick="openPdf('${state.activeReport.id}')">📄 Visualizar impressão (PDF)</button>
+        <button class="btn" onclick="handleStructureSections(this)">Organizar em seções automaticamente</button>
+        <button class="btn primary" onclick="handleSignReport('${state.activeReport.id}')">Assinar laudo</button>
         <button class="btn" onclick="goTo('dashboard')">Voltar ao painel</button>
       </div>
+      ${sections.length > 0 ? `
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <p style="font-size:12px; font-weight:600; margin:0 0 6px;">Seções organizadas (${sections.length}):</p>
+          <p style="font-size:12px; color:var(--text-muted); margin:0;">
+            ${sections.map((s) => `${s.section_number}) ${s.section_title}`).join(" · ")}
+          </p>
+        </div>
+      ` : ""}
       <p style="font-size:12px; color:var(--text-muted); margin-top:16px;">
-        A assinatura digital (D4Sign) ainda não está conectada nesta versão — próximo passo do produto.
+        Assinatura digital hoje: assine no sistema (botão acima) e, se quiser validade jurídica de assinatura digital oficial, baixe o PDF e assine com sua conta gov.br em
+        <a href="https://assinador.iti.br" target="_blank">assinador.iti.br</a> (gratuito, ICP-Brasil).
       </p>
     </div>
 
@@ -1156,7 +1191,7 @@ function viewReportDone() {
         <div class="row" style="margin-top:16px; flex-wrap:wrap;">
           ${photos.map((p) => `
             <div style="max-width:140px;">
-              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}?token=${state.token}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
               <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
               ${p.latitude != null && p.longitude != null ? `
                 <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
