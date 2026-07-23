@@ -15,6 +15,8 @@ const reportStructureRoutes = require("./routes/reportStructure");
 const processRoutes = require("./routes/processes");
 const sectionTemplateRoutes = require("./routes/sectionTemplates");
 const signatureRoutes = require("./routes/signatures");
+const pathologyRoutes = require("./routes/pathologies");
+const dashboardRoutes = require("./routes/dashboard");
 
 const app = express();
 
@@ -45,6 +47,8 @@ app.use("/reports", reportStructureRoutes);
 app.use("/processes", processRoutes);
 app.use("/section-templates", sectionTemplateRoutes);
 app.use("/reports", signatureRoutes);
+app.use("/pathologies", pathologyRoutes);
+app.use("/dashboard", dashboardRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);

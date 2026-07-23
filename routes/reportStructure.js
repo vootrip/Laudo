@@ -636,10 +636,32 @@ router.patch("/:id/deliver", async (req, res) => {
         error: "Só é possível marcar como entregue um laudo com status 'assinado' (ou o laudo não existe).",
       });
     }
+    await pool.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'entregue', 'Laudo entregue ao cliente')`,
+      [req.params.id]
+    );
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro ao marcar laudo como entregue." });
+  }
+});
+
+// GET /reports/:id/events — timeline básica do laudo (item 7)
+router.get("/:id/events", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT re.id, re.event_type, re.event_label, re.created_at
+       FROM report_events re
+       JOIN reports r ON r.id = re.report_id
+       WHERE re.report_id = $1 AND r.engineer_id = $2
+       ORDER BY re.created_at`,
+      [req.params.id, req.engineerId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao buscar histórico do laudo." });
   }
 });
 

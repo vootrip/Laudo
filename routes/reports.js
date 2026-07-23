@@ -35,6 +35,10 @@ router.post("/", checkPlanLimit, async (req, res) => {
        RETURNING *`,
       [req.engineerId, project_id, template_id, title, art_number || null, raw_input_json || {}, process_id || null]
     );
+    await pool.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'criado', 'Laudo criado')`,
+      [result.rows[0].id]
+    );
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -83,16 +87,29 @@ router.post("/:id/generate", async (req, res) => {
        SET generated_content_json = $1,
            technical_opinion_json = $2,
            norm_references = $3,
+           probable_cause = $4,
+           risk_level = $5,
+           recommended_deadline_days = $6,
+           art_required = $7,
            status = 'rascunho',
            updated_at = now()
-       WHERE id = $4
+       WHERE id = $8
        RETURNING *`,
       [
         JSON.stringify({ text: aiResult.generatedText }),
         JSON.stringify({ text: aiResult.technicalOpinion }),
         aiResult.citedNormCode ? [aiResult.citedNormCode] : [],
+        aiResult.probableCause,
+        aiResult.riskLevel,
+        aiResult.recommendedDeadlineDays,
+        aiResult.artRequired,
         req.params.id,
       ]
+    );
+
+    await pool.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'ia_gerado', 'Texto gerado com IA')`,
+      [req.params.id]
     );
 
     res.json({ report: updated.rows[0], ai: aiResult });
@@ -134,6 +151,11 @@ router.post("/:id/use-formatted-text", async (req, res) => {
       [JSON.stringify({ text: html }), req.params.id]
     );
 
+    await pool.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'ia_gerado', 'Texto definido sem IA')`,
+      [req.params.id]
+    );
+
     res.json({ report: updated.rows[0] });
   } catch (err) {
     console.error(err);
@@ -146,7 +168,11 @@ router.post("/:id/use-formatted-text", async (req, res) => {
 // (fica registrado como revisão manual)
 // ---------------------------------------------------------------
 router.patch("/:id/review", async (req, res) => {
-  const { edited_text, edited_opinion } = req.body;
+  const { edited_text, edited_opinion, probable_cause, risk_level, recommended_deadline_days, art_required } = req.body;
+
+  if (risk_level && !["baixo", "medio", "alto", "critico"].includes(risk_level)) {
+    return res.status(400).json({ error: "risk_level inválido." });
+  }
 
   try {
     const reportCheck = await assertEditable(req, res, req.params.id);
@@ -156,16 +182,34 @@ router.patch("/:id/review", async (req, res) => {
       `UPDATE reports
        SET generated_content_json = jsonb_set(COALESCE(generated_content_json, '{}'::jsonb), '{text}', to_jsonb($1::text)),
            technical_opinion_json = jsonb_set(COALESCE(technical_opinion_json, '{}'::jsonb), '{text}', to_jsonb($2::text)),
+           probable_cause = $3,
+           risk_level = $4,
+           recommended_deadline_days = $5,
+           art_required = $6,
            status = 'em_revisao',
            updated_at = now()
-       WHERE id = $3 AND engineer_id = $4
+       WHERE id = $7 AND engineer_id = $8
        RETURNING *`,
-      [edited_text, edited_opinion || "", req.params.id, req.engineerId]
+      [
+        edited_text,
+        edited_opinion || "",
+        probable_cause ?? null,
+        risk_level ?? null,
+        Number.isInteger(recommended_deadline_days) ? recommended_deadline_days : null,
+        typeof art_required === "boolean" ? art_required : null,
+        req.params.id,
+        req.engineerId,
+      ]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Laudo não encontrado." });
     }
+
+    await pool.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'revisao', 'Texto revisado pelo engenheiro')`,
+      [req.params.id]
+    );
 
     res.json(result.rows[0]);
   } catch (err) {
@@ -287,7 +331,7 @@ router.get("/:id/pdf", async (req, res) => {
 
     const engineerResult = await pool.query(
       `SELECT name, email, company_name, crea_number, crea_region, logo_url,
-              office_address, office_phone
+              professional_title, office_address, office_phone
        FROM engineers WHERE id = $1`,
       [req.engineerId]
     );

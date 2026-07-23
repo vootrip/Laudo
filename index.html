@@ -215,6 +215,12 @@ const state = {
   reportSections: [],
   officeProfile: null,
   profileSaved: false,
+  sectionTemplatesForType: [],
+  sectionTemplatesLoadedForType: null,
+  pathologyResults: null,
+  dashboardStats: null,
+  reportEvents: [],
+  reportEventsLoadedFor: null,
 };
 
 function setToken(token, engineer) {
@@ -835,6 +841,7 @@ async function handleImportReview(e) {
 
 async function handleReview(e) {
   e.preventDefault();
+  const f = e.target;
   const editedText = document.getElementById("reviewDiagnosticEditor").innerHTML.trim();
   const editedOpinion = document.getElementById("reviewOpinionEditor").innerHTML.trim();
 
@@ -847,10 +854,19 @@ async function handleReview(e) {
     return;
   }
 
+  const deadlineRaw = f.recommended_deadline_days.value.trim();
+
   try {
     const updated = await api(`/reports/${state.activeReport.id}/review`, {
       method: "PATCH",
-      body: JSON.stringify({ edited_text: editedText, edited_opinion: editedOpinion }),
+      body: JSON.stringify({
+        edited_text: editedText,
+        edited_opinion: editedOpinion,
+        probable_cause: f.probable_cause.value.trim() || null,
+        risk_level: f.risk_level.value || null,
+        recommended_deadline_days: deadlineRaw ? parseInt(deadlineRaw, 10) : null,
+        art_required: f.art_required.checked,
+      }),
     });
     state.activeReport = updated;
     await loadDashboardData();
@@ -868,6 +884,65 @@ async function loadReportPhotos(reportId) {
   } catch (err) {
     state.reportPhotos = [];
   }
+}
+
+// ---------------------------------------------------------------
+// Timeline do laudo e indicadores do dashboard (item 7)
+// ---------------------------------------------------------------
+async function loadReportEvents(reportId) {
+  if (state.reportEventsLoadedFor === reportId) return;
+  state.reportEventsLoadedFor = reportId;
+  try {
+    state.reportEvents = await api(`/reports/${reportId}/events`);
+  } catch (err) {
+    state.reportEvents = [];
+  }
+  render();
+}
+
+function timelineHtml() {
+  const events = state.reportEvents || [];
+  if (events.length === 0) return "";
+  return `
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+      <p style="font-size:12px; font-weight:600; margin:0 0 8px;">Linha do tempo</p>
+      ${events.map((e) => {
+        const time = new Date(e.created_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+        return `<p style="font-size:12px; color:var(--text-muted); margin:3px 0;">${time} — ${e.event_label}</p>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+async function loadDashboardStats() {
+  if (state.dashboardStats) return;
+  try {
+    state.dashboardStats = await api("/dashboard/stats");
+  } catch (err) {
+    state.dashboardStats = { total_reports: 0, by_status: {}, avg_turnaround_days: null, top_pathologies: [] };
+  }
+  render();
+}
+
+function dashboardStatsHtml() {
+  const s = state.dashboardStats;
+  if (!s) return `<div class="card"><p class="subtitle">Carregando indicadores...</p></div>`;
+  const statusLabels = { rascunho: "Rascunho", em_revisao: "Em revisão", assinado: "Assinado", entregue: "Entregue", complementado: "Complementado", retificado: "Retificado" };
+  const statusChips = Object.entries(s.by_status || {}).map(([k, v]) => `<span class="pill ${k}">${statusLabels[k] || k}: ${v}</span>`).join(" ") || "—";
+  const pathologyChips = (s.top_pathologies || []).map((p) => `<span class="pill">${p.tag} (${p.count})</span>`).join(" ") || "Nenhuma foto analisada por IA ainda";
+  return `
+    <div class="card">
+      <h2 style="margin:0 0 10px; font-size:14px;">Indicadores</h2>
+      <div class="row" style="gap:24px; flex-wrap:wrap;">
+        <div><p style="font-size:22px; font-weight:700; margin:0;">${s.total_reports}</p><p style="font-size:11px; color:var(--text-muted); margin:0;">laudos no total</p></div>
+        <div><p style="font-size:22px; font-weight:700; margin:0;">${s.avg_turnaround_days != null ? s.avg_turnaround_days + "d" : "—"}</p><p style="font-size:11px; color:var(--text-muted); margin:0;">tempo médio até assinatura</p></div>
+      </div>
+      <p style="font-size:11px; color:var(--text-muted); margin:12px 0 4px;">Por status:</p>
+      <div>${statusChips}</div>
+      <p style="font-size:11px; color:var(--text-muted); margin:12px 0 4px;">Patologias mais identificadas (fotos analisadas por IA):</p>
+      <div>${pathologyChips}</div>
+    </div>
+  `;
 }
 
 // Chamado quando o engenheiro escolhe/tira a(s) foto(s). Pede a
@@ -968,6 +1043,191 @@ async function handleDeletePhoto(photoId) {
   }
 }
 
+// ---------------------------------------------------------------
+// Análise de foto por IA (item 6) — só sob clique do engenheiro,
+// nunca automática. Identifica patologia visível e sugere legenda.
+// ---------------------------------------------------------------
+async function handleAnalyzePhoto(photoId, btn) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Analisando...";
+  try {
+    const updated = await api(`/reports/${state.activeReport.id}/photos/${photoId}/analyze`, { method: "POST" });
+    const idx = (state.reportPhotos || []).findIndex((p) => p.id === photoId);
+    if (idx !== -1) state.reportPhotos[idx] = { ...state.reportPhotos[idx], ...updated };
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+async function handleApplySuggestedCaption(photoId) {
+  const photo = (state.reportPhotos || []).find((p) => p.id === photoId);
+  if (!photo || !photo.ai_suggested_caption) return;
+  try {
+    const updated = await api(`/reports/${state.activeReport.id}/photos/${photoId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ caption: photo.ai_suggested_caption }),
+    });
+    const idx = (state.reportPhotos || []).findIndex((p) => p.id === photoId);
+    if (idx !== -1) state.reportPhotos[idx] = { ...state.reportPhotos[idx], ...updated };
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+// Cartão de foto reutilizado nas duas telas que exibem fotos
+// (report_generate e report_done) — evita duplicar o markup.
+function renderPhotoCard(p) {
+  const tagsLine = p.ai_tags && p.ai_tags.length ? `<p style="font-size:10px; color:var(--accent, #6B5CE0); margin:2px 0;">🏷 ${p.ai_tags.join(", ")}</p>` : "";
+  const suggestion = p.ai_suggested_caption && p.ai_suggested_caption !== p.caption
+    ? `<p style="font-size:10px; color:var(--text-muted); margin:2px 0; font-style:italic;">Sugestão: "${p.ai_suggested_caption}"</p>
+       <button class="btn" style="font-size:10px; padding:3px 6px;" onclick="handleApplySuggestedCaption('${p.id}')">Usar esta legenda</button>`
+    : "";
+  return `
+    <div style="max-width:160px;">
+      <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}?token=${state.token}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+      <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
+      ${p.latitude != null && p.longitude != null ? `
+        <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
+      ` : ""}
+      ${tagsLine}
+      ${suggestion}
+      <div style="display:flex; gap:4px; margin-top:4px; flex-wrap:wrap;">
+        <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleAnalyzePhoto('${p.id}', this)">${p.ai_analyzed_at ? "Reanalisar" : "Analisar"} com IA</button>
+        <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// Modelos de seção por tipo de laudo (item 8) — busca as seções
+// prontas cadastradas pra o tipo do template escolhido na criação
+// do laudo (ex: "muro" -> "Muro Alvenaria", "Identificação da
+// Divisa"...), oferecendo inserir cada uma no editor com um clique.
+// ---------------------------------------------------------------
+async function loadSectionTemplatesForActiveReport() {
+  const tpl = (state.templates || []).find((t) => t.id === state.activeReport?.template_id);
+  const type = tpl?.type;
+  if (!type || state.sectionTemplatesLoadedForType === type) return;
+  state.sectionTemplatesLoadedForType = type;
+  try {
+    state.sectionTemplatesForType = await api(`/section-templates?report_type=${encodeURIComponent(type)}`);
+  } catch (err) {
+    state.sectionTemplatesForType = [];
+  }
+  render();
+}
+
+function handleInsertSectionTemplate(id) {
+  const tpl = (state.sectionTemplatesForType || []).find((t) => t.id === id);
+  if (!tpl) return;
+  const editor = getObservationEditor();
+  const wholeText = editor.innerText || "";
+  const { nextSection } = computeNextIndexNumbers(wholeText);
+  const heading = `${nextSection}) ${tpl.section_title}`;
+
+  editor.focus();
+  restoreEditorSelection("observationEditor");
+  const bodyHtml = escapeHtml(tpl.default_content_text).replace(/\n/g, "<br>");
+  const html = `<div><b style="font-size:13pt">${escapeHtml(heading)}</b></div><div>${bodyHtml}</div><div><br></div>`;
+  document.execCommand("insertHTML", false, html);
+  saveEditorSelection("observationEditor");
+  updateIndexPreview();
+}
+
+function sectionTemplatesPanelHtml() {
+  const items = state.sectionTemplatesForType || [];
+  if (items.length === 0) return "";
+  return `
+    <div class="card" style="background: var(--bg); margin-bottom:14px;">
+      <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Seções prontas para este tipo de laudo</p>
+      <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px;">Conteúdo técnico-educativo de referência — insere no texto já numerado, ajuste pro caso específico depois.</p>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${items.map((t) => `
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:#fff;">
+            <span style="font-size:12px; font-weight:600;">${t.section_title}</span>
+            <button class="btn" style="font-size:11px; padding:4px 8px; flex:0 0 auto;" onclick="handleInsertSectionTemplate('${t.id}')">Inserir no texto</button>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// Biblioteca de patologias (item 5) — busca manual, o engenheiro
+// decide quando consultar (não é automático).
+// ---------------------------------------------------------------
+async function handleSearchPathologies() {
+  const input = document.getElementById("pathologySearchInput");
+  const q = input.value.trim();
+  if (!q) return;
+  try {
+    state.pathologyResults = await api(`/pathologies?q=${encodeURIComponent(q)}`);
+    render();
+    // Preserva o foco/valor digitado depois do re-render
+    const restored = document.getElementById("pathologySearchInput");
+    if (restored) { restored.value = q; restored.focus(); }
+  } catch (err) {
+    state.pathologyResults = [];
+    render();
+  }
+}
+
+function handleInsertPathology(id) {
+  const p = (state.pathologyResults || []).find((x) => x.id === id);
+  if (!p) return;
+  const editor = getObservationEditor();
+  editor.focus();
+  restoreEditorSelection("observationEditor");
+
+  const causesText = (p.probable_causes || []).join("; ");
+  const normsText = (p.norms || []).join(", ");
+  const parts = [`<div><b>${escapeHtml(p.name)}</b></div>`, `<div>${escapeHtml(p.description)}</div>`];
+  if (causesText) parts.push(`<div><i>Causas prováveis:</i> ${escapeHtml(causesText)}</div>`);
+  if (normsText) parts.push(`<div><i>Normas relacionadas:</i> ${escapeHtml(normsText)}</div>`);
+  parts.push(`<div><br></div>`);
+
+  document.execCommand("insertHTML", false, parts.join(""));
+  saveEditorSelection("observationEditor");
+  updateIndexPreview();
+}
+
+function pathologySearchPanelHtml() {
+  const results = state.pathologyResults;
+  return `
+    <div class="card" style="background: var(--bg); margin-bottom:14px;">
+      <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Biblioteca de patologias</p>
+      <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px;">Busque por sintoma (ex: "fissura", "infiltração") — o texto inserido é uma referência genérica, adapte pro caso observado.</p>
+      <div class="row" style="gap:8px;">
+        <input id="pathologySearchInput" placeholder="Ex: fissura, infiltração, corrosão..." onkeydown="if(event.key==='Enter'){event.preventDefault(); handleSearchPathologies();}">
+        <button class="btn" type="button" style="flex:0 0 auto;" onclick="handleSearchPathologies()">Buscar</button>
+      </div>
+      ${results ? (results.length > 0 ? `
+        <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+          ${results.map((p) => `
+            <div style="border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:#fff;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <span style="font-size:12px; font-weight:600;">${p.name}</span>
+                <button class="btn" style="font-size:11px; padding:4px 8px; flex:0 0 auto;" onclick="handleInsertPathology('${p.id}')">Inserir no texto</button>
+              </div>
+              <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">${p.description}</p>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p style="font-size:12px; color:var(--text-muted); margin:10px 0 0;">Nenhuma patologia encontrada pra esse termo.</p>`) : ""}
+    </div>
+  `;
+}
+
 async function openPdf(reportId) {
   try {
     const res = await fetch(`${API_BASE}/reports/${reportId}/pdf`, {
@@ -1026,7 +1286,16 @@ function render() {
   if (state.view === "report_generate" || state.view === "report_review") {
     try { document.execCommand("styleWithCSS", false, true); } catch (e) {}
   }
-  if (state.view === "report_generate") updateIndexPreview();
+  if (state.view === "report_generate") {
+    updateIndexPreview();
+    loadSectionTemplatesForActiveReport();
+  }
+  if (state.view === "report_done" && state.activeReport) {
+    loadReportEvents(state.activeReport.id);
+  }
+  if (state.view === "dashboard") {
+    loadDashboardStats();
+  }
 }
 
 function errorHtml() {
@@ -1149,8 +1418,37 @@ async function handleDuplicateReport(reportId) {
   }
 }
 
+// ---------------------------------------------------------------
+// Checklist antes de finalizar (item 3) — só informativo/de alerta,
+// não bloqueia: o engenheiro decide se segue mesmo assim.
+// ---------------------------------------------------------------
+function computeChecklist(report, photos) {
+  return [
+    { label: "Ao menos 1 foto anexada", ok: (photos || []).length > 0 },
+    { label: "Número de ART informado", ok: !!report.art_number },
+    { label: "Norma técnica citada", ok: (report.norm_references || []).length > 0 },
+    { label: "Parecer técnico conclusivo preenchido", ok: !!(report.technical_opinion_json?.text || "").replace(/<[^>]*>/g, "").trim() },
+  ];
+}
+
+function checklistHtml(report, photos) {
+  const items = computeChecklist(report, photos);
+  return `
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+      <p style="font-size:12px; font-weight:600; margin:0 0 8px;">Checklist antes de assinar</p>
+      ${items.map((i) => `<p style="font-size:12px; margin:3px 0; color:${i.ok ? "var(--text)" : "var(--text-muted)"};">${i.ok ? "☑" : "☐"} ${i.label}</p>`).join("")}
+    </div>
+  `;
+}
+
 async function handleSignReport(reportId) {
-  if (!confirm("Assinar este laudo? Depois de assinado, o conteúdo fica travado — para corrigir será preciso destravar explicitamente para revisão.")) return;
+  const checklist = computeChecklist(state.activeReport, state.reportPhotos);
+  const missing = checklist.filter((i) => !i.ok);
+  let message = "Assinar este laudo? Depois de assinado, o conteúdo fica travado — para corrigir será preciso destravar explicitamente para revisão.";
+  if (missing.length > 0) {
+    message = `Atenção — itens pendentes no checklist:\n${missing.map((i) => "• " + i.label).join("\n")}\n\nMesmo assim, assinar este laudo?`;
+  }
+  if (!confirm(message)) return;
   try {
     await api(`/reports/${reportId}/sign`, { method: "POST", body: JSON.stringify({}) });
     await loadDashboardData();
@@ -1276,6 +1574,8 @@ function viewDashboard() {
       <span>Plano atual: <strong>${state.engineer.plan}</strong></span>
       <button class="btn" onclick="goTo('upgrade')">Ver planos</button>
     </div>
+
+    ${dashboardStatsHtml()}
 
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -1477,6 +1777,8 @@ function viewReportGenerate() {
       <h2>${state.activeReport.title}</h2>
       <p class="subtitle">Descreva o que você observou, ou cole o laudo inteiro já escrito — a IA reformula/completa em linguagem técnica, sem inventar fatos que você não escreveu</p>
       ${errorHtml()}
+      ${sectionTemplatesPanelHtml()}
+      ${pathologySearchPanelHtml()}
       <div class="card" style="background: var(--bg); margin-bottom:14px;">
         <p style="font-size:13px; font-weight:600; margin:0 0 8px;">Montar índice do laudo</p>
         <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px;">Posicione o cursor no ponto do texto abaixo onde a seção deve começar, dê um título e clique em Incluir — a numeração (1, 2, 3... ou 7.1, 7.2...) é calculada automaticamente, no mesmo padrão do laudo modelo.</p>
@@ -1520,16 +1822,7 @@ function viewReportGenerate() {
       </form>
       ${photos.length > 0 ? `
         <div class="row" style="margin-top:16px; flex-wrap:wrap;">
-          ${photos.map((p) => `
-            <div style="max-width:140px;">
-              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}?token=${state.token}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
-              <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
-              ${p.latitude != null && p.longitude != null ? `
-                <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
-              ` : ""}
-              <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
-            </div>
-          `).join("")}
+          ${photos.map(renderPhotoCard).join("")}
         </div>
       ` : `<p class="empty-state">Nenhuma foto anexada ainda.</p>`}
     </div>
@@ -1546,8 +1839,16 @@ function toEditorInitialHtml(content) {
 
 function viewReportReview() {
   const ai = state.lastAiResult;
-  const diagnosticContent = toEditorInitialHtml(state.activeReport.generated_content_json.text || "");
-  const opinionContent = toEditorInitialHtml(state.activeReport.technical_opinion_json?.text || ai?.technicalOpinion || "");
+  const r = state.activeReport;
+  const diagnosticContent = toEditorInitialHtml(r.generated_content_json.text || "");
+  const opinionContent = toEditorInitialHtml(r.technical_opinion_json?.text || ai?.technicalOpinion || "");
+  const riskOptions = [
+    ["", "— não classificado —"],
+    ["baixo", "Baixo"],
+    ["medio", "Médio"],
+    ["alto", "Alto"],
+    ["critico", "Crítico"],
+  ];
   return `
     <div class="card">
       <h2>Revisar texto do laudo</h2>
@@ -1561,6 +1862,32 @@ function viewReportReview() {
         <label style="margin-top:14px;">Parecer técnico conclusivo (editável antes de confirmar)</label>
         ${richToolbarHtml("reviewOpinionEditor")}
         ${richEditorHtml("reviewOpinionEditor", "Parecer conclusivo...", opinionContent)}
+
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <p style="font-size:13px; font-weight:600; margin:0 0 4px;">Diagnóstico técnico estruturado (sugerido pela IA — editável)</p>
+          <p style="font-size:11px; color:var(--text-muted); margin:0 0 10px;">Aparece resumido no PDF final. Deixe em branco/"não classificado" se não houver base suficiente pra afirmar.</p>
+          <div class="row" style="gap:12px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:200px;">
+              <label style="margin-top:0;">Causa provável</label>
+              <input name="probable_cause" value="${(r.probable_cause || "").replace(/"/g, "&quot;")}" placeholder="Ex: Recalque diferencial de fundação">
+            </div>
+            <div style="flex:0 0 160px;">
+              <label style="margin-top:0;">Nível de risco</label>
+              <select name="risk_level">
+                ${riskOptions.map(([v, l]) => `<option value="${v}" ${r.risk_level === v ? "selected" : ""}>${l}</option>`).join("")}
+              </select>
+            </div>
+            <div style="flex:0 0 160px;">
+              <label style="margin-top:0;">Prazo recomendado (dias)</label>
+              <input name="recommended_deadline_days" type="number" min="0" value="${r.recommended_deadline_days ?? ""}" placeholder="Ex: 90">
+            </div>
+          </div>
+          <label style="margin-top:10px; display:flex; align-items:center; gap:6px; font-weight:400;">
+            <input type="checkbox" name="art_required" style="width:auto;" ${r.art_required ? "checked" : ""}>
+            ART recomendada para a intervenção
+          </label>
+        </div>
+
         <div style="margin-top:16px; display:flex; gap:8px;">
           <button type="button" class="btn" onclick="goTo('report_generate')">Gerar novamente</button>
           <button class="btn primary" type="submit">Confirmar revisão</button>
@@ -1591,6 +1918,8 @@ function viewReportDone() {
           </p>
         </div>
       ` : ""}
+      ${checklistHtml(state.activeReport, state.reportPhotos)}
+      ${timelineHtml()}
       <p style="font-size:12px; color:var(--text-muted); margin-top:16px;">
         Assinatura digital hoje: assine no sistema (botão acima) e, se quiser validade jurídica de assinatura digital oficial, baixe o PDF e assine com sua conta gov.br em
         <a href="https://assinador.iti.br" target="_blank">assinador.iti.br</a> (gratuito, ICP-Brasil).
@@ -1609,16 +1938,7 @@ function viewReportDone() {
       </form>
       ${photos.length > 0 ? `
         <div class="row" style="margin-top:16px; flex-wrap:wrap;">
-          ${photos.map((p) => `
-            <div style="max-width:140px;">
-              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}?token=${state.token}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
-              <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
-              ${p.latitude != null && p.longitude != null ? `
-                <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
-              ` : ""}
-              <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
-            </div>
-          `).join("")}
+          ${photos.map(renderPhotoCard).join("")}
         </div>
       ` : `<p class="empty-state">Nenhuma foto anexada ainda.</p>`}
     </div>

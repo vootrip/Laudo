@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const crypto = require("crypto");
 
 /**
  * Monta o snapshot completo do laudo (campos do laudo + seções +
@@ -100,11 +101,17 @@ async function createNewVersion(reportId, { changeSummary, signedPdfUrl } = {}) 
       throw Object.assign(new Error("Laudo não encontrado."), { statusCode: 404 });
     }
 
+    // Código de verificação: hash do snapshot imutável desta versão. Não
+    // muda depois — é o que permite conferir mais tarde que o conteúdo
+    // assinado não foi alterado. Sem QR/página pública por enquanto, só
+    // o código impresso no PDF (ver drawVerificationCode em pdfService.js).
+    const verificationHash = crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+
     const versionResult = await client.query(
-      `INSERT INTO report_versions (report_id, version_number, snapshot_json, change_summary, signed_pdf_url)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO report_versions (report_id, version_number, snapshot_json, change_summary, signed_pdf_url, verification_hash)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [reportId, nextVersionNumber, JSON.stringify(snapshot), changeSummary || null, signedPdfUrl || null]
+      [reportId, nextVersionNumber, JSON.stringify(snapshot), changeSummary || null, signedPdfUrl || null, verificationHash]
     );
     const version = versionResult.rows[0];
 
@@ -113,9 +120,15 @@ async function createNewVersion(reportId, { changeSummary, signedPdfUrl } = {}) 
        SET current_version_id = $1,
            status = 'assinado',
            signed_at = now(),
+           verification_hash = $2,
            updated_at = now()
-       WHERE id = $2`,
-      [version.id, reportId]
+       WHERE id = $3`,
+      [version.id, verificationHash, reportId]
+    );
+
+    await client.query(
+      `INSERT INTO report_events (report_id, event_type, event_label) VALUES ($1, 'assinado', $2)`,
+      [reportId, nextVersionNumber > 1 ? `Reassinado (versão ${nextVersionNumber})` : "Laudo assinado"]
     );
 
     await client.query("COMMIT");

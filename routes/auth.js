@@ -84,7 +84,7 @@ router.get("/me", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, name, email, crea_number, crea_region, company_name,
-              logo_url, office_address, office_phone, plan
+              logo_url, professional_title, office_address, office_phone, plan
        FROM engineers WHERE id = $1`,
       [req.engineerId]
     );
@@ -104,18 +104,19 @@ router.get("/me", requireAuth, async (req, res) => {
 // (mesmo padrão do laudo real: nome, título, endereço, fone, e-mail)
 // ---------------------------------------------------------------
 router.patch("/profile", requireAuth, async (req, res) => {
-  const { company_name, office_address, office_phone, logo_url } = req.body;
+  const { company_name, professional_title, office_address, office_phone, logo_url } = req.body;
   try {
     const result = await pool.query(
       `UPDATE engineers
        SET company_name = COALESCE($1, company_name),
-           office_address = COALESCE($2, office_address),
-           office_phone = COALESCE($3, office_phone),
-           logo_url = COALESCE($4, logo_url),
+           professional_title = COALESCE($2, professional_title),
+           office_address = COALESCE($3, office_address),
+           office_phone = COALESCE($4, office_phone),
+           logo_url = COALESCE($5, logo_url),
            updated_at = now()
-       WHERE id = $5
-       RETURNING id, name, email, company_name, office_address, office_phone, logo_url`,
-      [company_name, office_address, office_phone, logo_url, req.engineerId]
+       WHERE id = $6
+       RETURNING id, name, email, company_name, professional_title, office_address, office_phone, logo_url`,
+      [company_name, professional_title, office_address, office_phone, logo_url, req.engineerId]
     );
     res.json(result.rows[0]);
   } catch (err) {

@@ -101,6 +101,23 @@ campos:
 - "cited_norm_code": código da norma citada, ou null
 - "insufficient_detail": true se a observação original for vaga demais para
   compor uma descrição técnica útil, false caso contrário
+- "probable_cause": causa técnica mais provável da manifestação observada,
+  em uma frase curta (ex: "Recalque diferencial de fundação"), APENAS se a
+  observação der base suficiente para apontar uma causa provável — senão
+  null. Não invente uma causa específica que a observação não sustente.
+- "risk_level": classificação de risco — exatamente um destes valores:
+  "baixo", "medio", "alto", "critico" — ou null se não houver informação
+  suficiente para classificar com segurança. Julgue apenas pelo que foi
+  descrito (extensão, progressão, elemento afetado), nunca por suposição.
+- "recommended_deadline_days": número de dias recomendado para reavaliação
+  ou intervenção, como inteiro, APENAS se a gravidade descrita justificar
+  um prazo (ex: risco estrutural ativo). Para observações de baixa
+  gravidade ou sem urgência aparente, use null — não invente um prazo
+  arbitrário só para preencher o campo.
+- "art_required": true se a natureza do que foi descrito (ex: dano
+  estrutural, risco à segurança) tipicamente exige ART para a intervenção
+  recomendada, false se claramente não exige, null se não for possível
+  julgar com o que foi informado.
 
 Se o texto gerado contiver aspas duplas, escape-as corretamente (\\") para
 manter o JSON válido. Não use quebras de linha literais dentro dos valores —
@@ -162,6 +179,10 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
       technical_opinion: opinionMatch ? opinionMatch[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") : "",
       cited_norm_code: null,
       insufficient_detail: false,
+      probable_cause: (rawText.match(/"probable_cause"\s*:\s*"([^"]*)"/) || [])[1] || null,
+      risk_level: (rawText.match(/"risk_level"\s*:\s*"([^"]*)"/) || [])[1] || null,
+      recommended_deadline_days: parseInt((rawText.match(/"recommended_deadline_days"\s*:\s*(\d+)/) || [])[1], 10) || null,
+      art_required: /"art_required"\s*:\s*true/.test(rawText) ? true : /"art_required"\s*:\s*false/.test(rawText) ? false : null,
     };
   }
 
@@ -170,6 +191,10 @@ async function generateTechnicalText(rawObservation, itemCategories, engineerId)
     technicalOpinion: parsed.technical_opinion,
     citedNormCode: parsed.cited_norm_code,
     insufficientDetail: parsed.insufficient_detail === true,
+    probableCause: parsed.probable_cause || null,
+    riskLevel: ["baixo", "medio", "alto", "critico"].includes(parsed.risk_level) ? parsed.risk_level : null,
+    recommendedDeadlineDays: Number.isInteger(parsed.recommended_deadline_days) ? parsed.recommended_deadline_days : null,
+    artRequired: typeof parsed.art_required === "boolean" ? parsed.art_required : null,
     candidateNormsConsidered: candidateNorms.map((n) => ({
       code: n.code,
       score: n.score,
@@ -349,4 +374,85 @@ use quebras de linha literais dentro dos valores — use \\n.`;
   return parsed.sections;
 }
 
-module.exports = { generateTechnicalText, getCandidateNorms, reviewImportedDocument, structureReportSections };
+const PHOTO_ANALYSIS_TAGS = [
+  "fissura", "trinca", "infiltracao", "umidade", "eflorescencia", "corrosao",
+  "armadura_exposta", "mofo", "destacamento", "desplacamento", "erosao",
+  "recalque", "carbonatacao", "vazamento", "outro",
+];
+
+/**
+ * Análise de foto sob demanda (nunca automática — só quando o
+ * engenheiro clica em "Analisar"). Devolve tags de patologia visível
+ * e uma sugestão de legenda técnica, restritas ao que é observável
+ * na imagem — a IA não deve inferir causa, gravidade ou dimensão que
+ * não seja visualmente aparente.
+ */
+async function analyzePhotoWithAI(base64Data, mediaType) {
+  const systemPrompt = `Você é um assistente técnico de engenharia analisando uma foto de vistoria.
+
+Sua tarefa: identificar quais manifestações patológicas são VISUALMENTE
+observáveis na imagem, e sugerir uma legenda técnica curta e objetiva.
+
+Regras obrigatórias:
+1. Baseie-se ESTRITAMENTE no que é visível na imagem. Não infira causa,
+   gravidade, medidas ou histórico que a foto sozinha não comprove.
+2. Se a imagem não mostrar nenhuma patologia clara (ex: foto de fachada
+   sem dano aparente, foto de contexto/localização), retorne tags vazias
+   e uma legenda neutra descrevendo o que a foto mostra.
+3. A legenda sugerida deve ser curta (uma frase), no mesmo estilo do
+   laudo real de referência (ex: "Fissura diagonal na alvenaria próxima
+   à esquadria", "Vista geral da fachada do imóvel").
+4. Use apenas tags desta lista fixa: ${PHOTO_ANALYSIS_TAGS.join(", ")}.
+
+Responda APENAS em JSON válido, sem markdown, com os campos:
+- "tags": array de tags da lista fixa (pode ser vazio)
+- "suggested_caption": legenda sugerida, como string`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+            { type: "text", text: "Analise esta foto de vistoria técnica." },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Erro na API da IA: ${response.status} - ${errText}`);
+  }
+
+  const data = await response.json();
+  const textBlock = data.content.find((c) => c.type === "text");
+  const rawJson = (textBlock?.text || "").replace(/```json|```/g, "").trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch (err) {
+    throw new Error("A IA retornou uma resposta em formato inesperado. Tente novamente.");
+  }
+
+  const tags = Array.isArray(parsed.tags) ? parsed.tags.filter((t) => PHOTO_ANALYSIS_TAGS.includes(t)) : [];
+
+  return {
+    tags,
+    suggestedCaption: typeof parsed.suggested_caption === "string" ? parsed.suggested_caption : null,
+  };
+}
+
+module.exports = { generateTechnicalText, getCandidateNorms, reviewImportedDocument, structureReportSections, analyzePhotoWithAI };

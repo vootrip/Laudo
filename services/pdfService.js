@@ -218,17 +218,32 @@ function renderRichText(doc, rawContent, opts = {}) {
 }
 
 function drawFooter(doc, engineer, pageWidth) {
-  const parts = [
-    `${engineer.name}${engineer.crea_number ? " — CREA " + engineer.crea_number + "/" + (engineer.crea_region || "") : ""}`,
-  ];
-  if (engineer.office_address) parts.push(engineer.office_address);
-  const contact = [engineer.office_phone, engineer.email].filter(Boolean).join(" — e-mail: ");
-  if (contact) parts.push(contact);
+  const lines = [];
+  lines.push({ text: engineer.name, bold: true });
+  if (engineer.professional_title) {
+    lines.push({ text: engineer.professional_title, bold: true });
+  }
+  const addressLine = [engineer.office_address, engineer.office_phone ? `Fone ${engineer.office_phone}` : null]
+    .filter(Boolean)
+    .join(" - ");
+  if (addressLine) lines.push({ text: addressLine, bold: false });
+  if (engineer.email) lines.push({ text: `e-mail: ${engineer.email}`, bold: false });
 
-  doc
-    .fontSize(7.5)
-    .fillColor("#999790")
-    .text(parts.join("\n"), 56, 772, { width: pageWidth, align: "center", lineGap: 1 });
+  if (lines.length === 0) return;
+
+  const footerTop = 768;
+  const lineHeight = 9.5;
+
+  // Régua fina acima do rodapé, no mesmo padrão do laudo real
+  doc.moveTo(56, footerTop).lineTo(56 + pageWidth, footerTop).strokeColor("#D8D6CE").lineWidth(0.5).stroke();
+
+  lines.forEach((line, i) => {
+    doc
+      .font(line.bold ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(7.5)
+      .fillColor("#6B6960")
+      .text(line.text, 56, footerTop + 6 + i * lineHeight, { width: pageWidth, align: "center" });
+  });
 }
 
 function formatFigureCaption(label, photo) {
@@ -334,6 +349,43 @@ function generateReportPdf({
           .moveDown(0.8);
       });
     };
+
+    // ---------------------------------------------------------
+    // Diagnóstico técnico estruturado (causa provável, risco,
+    // prazo, ART) — só aparece se algum campo foi de fato
+    // preenchido (a IA não é obrigada a preencher todos).
+    // ---------------------------------------------------------
+    const riskLabels = { baixo: "Baixo", medio: "Médio", alto: "Alto", critico: "Crítico" };
+    const diagnosisLines = [];
+    if (report.probable_cause) diagnosisLines.push(["Causa provável", report.probable_cause]);
+    if (report.risk_level) diagnosisLines.push(["Nível de risco", riskLabels[report.risk_level] || report.risk_level]);
+    if (report.recommended_deadline_days) diagnosisLines.push(["Prazo recomendado", `${report.recommended_deadline_days} dias`]);
+    if (report.art_required === true) diagnosisLines.push(["ART", "Recomendada para a intervenção"]);
+
+    if (diagnosisLines.length > 0) {
+      if (doc.y > 680) doc.addPage();
+      const boxTop = doc.y;
+      const boxPadding = 10;
+      const lineHeight = 13;
+      const boxHeight = boxPadding * 2 + lineHeight * diagnosisLines.length + 14;
+
+      doc.rect(56, boxTop, pageContentWidth, boxHeight).fillColor("#F4F2EC").fill();
+      doc
+        .fontSize(9.5)
+        .font("Helvetica-Bold")
+        .fillColor("#2C2C2A")
+        .text("Diagnóstico técnico (resumo)", 56 + boxPadding, boxTop + boxPadding);
+
+      let lineY = boxTop + boxPadding + 16;
+      diagnosisLines.forEach(([label, value]) => {
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor("#44433F").text(`${label}: `, 56 + boxPadding, lineY, { continued: true });
+        doc.font("Helvetica").fillColor("#44433F").text(value);
+        lineY += lineHeight;
+      });
+
+      doc.x = 56;
+      doc.y = boxTop + boxHeight + 12;
+    }
 
     if (sections && sections.length > 0) {
       sections.forEach((section) => {
@@ -494,6 +546,19 @@ function generateReportPdf({
       .fontSize(9)
       .fillColor("#44433F")
       .text(`${engineer.name} — CREA ${engineer.crea_number || "-"}/${engineer.crea_region || "-"}`, 56, sigY + 6);
+
+    // Código de verificação — só existe a partir da primeira assinatura
+    // (é o hash do snapshot imutável criado nesse momento). Documento
+    // ainda em rascunho/revisão não tem código, porque o conteúdo ainda
+    // pode mudar.
+    if (report.verification_hash) {
+      const code = report.verification_hash.slice(0, 32).toUpperCase().match(/.{1,4}/g).join("-");
+      doc
+        .fontSize(8)
+        .font("Helvetica")
+        .fillColor("#8A887E")
+        .text(`Código de verificação: ${code}`, 56, sigY + 26, { width: 300 });
+    }
 
     // ---------------------------------------------------------
     // 9. Rodapé em TODAS as páginas (nome, título, endereço,
