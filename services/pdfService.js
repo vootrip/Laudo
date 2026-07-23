@@ -29,6 +29,194 @@ function formatCurrencyBRL(cents) {
   return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+// ---------------------------------------------------------------
+// Renderização de texto rico (produzido pelo editor com barra de
+// formatação do frontend: negrito, itálico, sublinhado, fonte,
+// tamanho, cor, listas, alinhamento). Laudos antigos ou trechos sem
+// nenhuma tag caem direto no comportamento anterior (texto puro),
+// sem custo extra.
+// ---------------------------------------------------------------
+const RICH_FONT_MAP = {
+  Helvetica: { normal: "Helvetica", bold: "Helvetica-Bold", italic: "Helvetica-Oblique", boldItalic: "Helvetica-BoldOblique" },
+  "Times New Roman": { normal: "Times-Roman", bold: "Times-Bold", italic: "Times-Italic", boldItalic: "Times-BoldItalic" },
+  "Courier New": { normal: "Courier", bold: "Courier-Bold", italic: "Courier-Oblique", boldItalic: "Courier-BoldOblique" },
+};
+
+function rgbStringToHex(str) {
+  const m = str.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/i);
+  if (!m) return str; // já deve ser hex (#rrggbb) ou nome de cor válido do pdfkit
+  const toHex = (n) => Number(n).toString(16).padStart(2, "0");
+  return `#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`;
+}
+
+function parseStyleAttr(attrString) {
+  const styleMatch = (attrString || "").match(/style\s*=\s*"([^"]*)"/i);
+  const styles = {};
+  if (styleMatch) {
+    styleMatch[1].split(";").forEach((decl) => {
+      const idx = decl.indexOf(":");
+      if (idx === -1) return;
+      const key = decl.slice(0, idx).trim().toLowerCase();
+      const val = decl.slice(idx + 1).trim();
+      if (key && val) styles[key] = val;
+    });
+  }
+  return styles;
+}
+
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function pickFontName(state) {
+  const family = RICH_FONT_MAP[state.fontFamily] || RICH_FONT_MAP.Helvetica;
+  if (state.bold && state.italic) return family.boldItalic;
+  if (state.bold) return family.bold;
+  if (state.italic) return family.italic;
+  return family.normal;
+}
+
+function renderRichText(doc, rawContent, opts = {}) {
+  const content = rawContent || "";
+  const baseFontSize = opts.fontSize || 10.5;
+  const baseColor = opts.color || "#2C2C2A";
+  const baseAlign = opts.align || "justify";
+  const lineGap = opts.lineGap != null ? opts.lineGap : 3;
+  const baseIndent = opts.indent || 0;
+
+  // Sem nenhuma tag: comportamento antigo, sem overhead de parsing
+  if (!content.includes("<")) {
+    doc.font("Helvetica").fontSize(baseFontSize).fillColor(baseColor)
+      .text(content, { align: baseAlign, lineGap, indent: baseIndent });
+    return;
+  }
+
+  const tokenRe = /<(\/?)([a-zA-Z0-9]+)([^>]*)>|([^<]+)/g;
+  let match;
+
+  let state = { bold: false, italic: false, underline: false, fontFamily: "Helvetica", fontSize: baseFontSize, color: baseColor };
+  const stateStack = [];
+  const listStack = []; // { type: 'ul'|'ol', counter }
+  let currentRuns = [];
+  let currentAlign = baseAlign;
+
+  function currentIndent() {
+    return baseIndent + listStack.length * 14;
+  }
+
+  function flushParagraph() {
+    if (currentRuns.length === 0) return;
+    currentRuns.forEach((run, i) => {
+      const isFirst = i === 0;
+      const isLast = i === currentRuns.length - 1;
+      const options = { continued: !isLast, underline: run.underline };
+      if (isFirst) {
+        options.align = currentAlign;
+        options.indent = currentIndent();
+        options.lineGap = lineGap;
+      }
+      doc.font(run.font).fontSize(run.fontSize).fillColor(run.color).text(run.text, options);
+    });
+    doc.moveDown(0.15);
+    currentRuns = [];
+  }
+
+  while ((match = tokenRe.exec(content)) !== null) {
+    // Texto puro entre tags
+    if (match[4] !== undefined) {
+      const text = decodeHtmlEntities(match[4]).replace(/[ \t]+/g, " ").replace(/\n/g, " ");
+      if (text.trim().length === 0 && currentRuns.length === 0) continue;
+      currentRuns.push({
+        text,
+        font: pickFontName(state),
+        fontSize: state.fontSize,
+        color: state.color,
+        underline: state.underline,
+      });
+      continue;
+    }
+
+    const closing = match[1] === "/";
+    const tag = match[2].toLowerCase();
+    const attrs = match[3] || "";
+
+    if (["b", "strong", "i", "em", "u", "span", "font"].includes(tag)) {
+      if (!closing) {
+        stateStack.push(state);
+        let next = state;
+        if (tag === "b" || tag === "strong") next = { ...state, bold: true };
+        else if (tag === "i" || tag === "em") next = { ...state, italic: true };
+        else if (tag === "u") next = { ...state, underline: true };
+        else if (tag === "span" || tag === "font") {
+          const styles = parseStyleAttr(attrs);
+          next = { ...state };
+          if (styles.color) next.color = rgbStringToHex(styles.color);
+          if (styles["font-size"]) {
+            const sizeNum = parseFloat(styles["font-size"]);
+            if (!isNaN(sizeNum)) next.fontSize = sizeNum;
+          }
+          if (styles["font-family"]) {
+            const fam = styles["font-family"].replace(/["']/g, "").split(",")[0].trim();
+            if (RICH_FONT_MAP[fam]) next.fontFamily = fam;
+          }
+        }
+        state = next;
+      } else {
+        state = stateStack.pop() || state;
+      }
+      continue;
+    }
+
+    if (tag === "ul" || tag === "ol") {
+      if (!closing) {
+        flushParagraph();
+        listStack.push({ type: tag, counter: 0 });
+      } else {
+        listStack.pop();
+      }
+      continue;
+    }
+
+    if (tag === "li") {
+      if (!closing) {
+        flushParagraph();
+        const list = listStack[listStack.length - 1];
+        const marker = list && list.type === "ol" ? `${(list.counter += 1)}.  ` : "•  ";
+        currentRuns.push({ text: marker, font: pickFontName(state), fontSize: state.fontSize, color: state.color, underline: false });
+      } else {
+        flushParagraph();
+      }
+      continue;
+    }
+
+    if (tag === "p" || tag === "div") {
+      if (!closing) {
+        flushParagraph();
+        const styles = parseStyleAttr(attrs);
+        currentAlign = styles["text-align"] || baseAlign;
+      } else {
+        flushParagraph();
+        currentAlign = baseAlign;
+      }
+      continue;
+    }
+
+    if (tag === "br") {
+      flushParagraph();
+      continue;
+    }
+    // Outras tags desconhecidas são ignoradas (o texto interno ainda é processado)
+  }
+
+  flushParagraph();
+}
+
 function drawFooter(doc, engineer, pageWidth) {
   const parts = [
     `${engineer.name}${engineer.crea_number ? " — CREA " + engineer.crea_number + "/" + (engineer.crea_region || "") : ""}`,
@@ -165,12 +353,9 @@ function generateReportPdf({
               .fillColor("#2C2C2A")
               .font("Helvetica-Bold")
               .text(`${sub.subsection_number} ${sub.subsection_title}`)
-              .moveDown(0.3)
-              .font("Helvetica")
-              .fontSize(10.5)
-              .fillColor("#2C2C2A")
-              .text(sub.content_text || "", { align: "justify", lineGap: 3 })
-              .moveDown(0.6);
+              .moveDown(0.3);
+            renderRichText(doc, sub.content_text || "", { align: "justify", lineGap: 3, fontSize: 10.5, color: "#2C2C2A" });
+            doc.moveDown(0.6);
 
             renderFigures(null, sub.id);
           });
@@ -179,12 +364,8 @@ function generateReportPdf({
           // ficariam de fora tanto do loop acima quanto das "soltas".
           renderFigures(section.id, null);
         } else {
-          doc
-            .font("Helvetica")
-            .fontSize(10.5)
-            .fillColor("#2C2C2A")
-            .text(section.content_text || "", { align: "justify", lineGap: 3 })
-            .moveDown(0.6);
+          renderRichText(doc, section.content_text || "", { align: "justify", lineGap: 3, fontSize: 10.5, color: "#2C2C2A" });
+          doc.moveDown(0.6);
 
           renderFigures(section.id, null);
         }
@@ -198,12 +379,9 @@ function generateReportPdf({
         .fillColor("#2C2C2A")
         .font("Helvetica-Bold")
         .text("Descrição técnica")
-        .moveDown(0.4)
-        .font("Helvetica")
-        .fontSize(10.5)
-        .fillColor("#2C2C2A")
-        .text(report.generated_content_json?.text || "", { align: "justify", lineGap: 3 })
-        .moveDown(1);
+        .moveDown(0.4);
+      renderRichText(doc, report.generated_content_json?.text || "", { align: "justify", lineGap: 3, fontSize: 10.5, color: "#2C2C2A" });
+      doc.moveDown(1);
     }
 
     // Fotos que não estão vinculadas a nenhuma seção/subseção específica
