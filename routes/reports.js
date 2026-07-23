@@ -106,6 +106,42 @@ router.post("/:id/generate", async (req, res) => {
 });
 
 // ---------------------------------------------------------------
+// POST /reports/:id/use-formatted-text — pula a reescrita da IA e usa
+// o texto exatamente como o engenheiro escreveu no editor (com toda a
+// formatação: negrito, itálico, fonte, cor, listas, alinhamento). Vai
+// direto pra tela de revisão, com o parecer técnico em branco pro
+// engenheiro preencher — não há inferência automática nesse caminho.
+// ---------------------------------------------------------------
+router.post("/:id/use-formatted-text", async (req, res) => {
+  const { html } = req.body;
+
+  if (!html || !html.trim()) {
+    return res.status(400).json({ error: "Campo 'html' é obrigatório." });
+  }
+
+  try {
+    const reportCheck = await assertEditable(req, res, req.params.id);
+    if (!reportCheck) return;
+
+    const updated = await pool.query(
+      `UPDATE reports
+       SET generated_content_json = $1,
+           technical_opinion_json = COALESCE(technical_opinion_json, '{"text": ""}'::jsonb),
+           status = 'rascunho',
+           updated_at = now()
+       WHERE id = $2
+       RETURNING *`,
+      [JSON.stringify({ text: html }), req.params.id]
+    );
+
+    res.json({ report: updated.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro ao salvar texto formatado: " + err.message });
+  }
+});
+
+// ---------------------------------------------------------------
 // PATCH /reports/:id/review — engenheiro edita o texto gerado
 // (fica registrado como revisão manual)
 // ---------------------------------------------------------------
