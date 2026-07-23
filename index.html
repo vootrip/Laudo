@@ -999,8 +999,8 @@ function viewReportChooseSource() {
       <h2>${state.activeReport.title}</h2>
       <p class="subtitle">Como você quer preencher este laudo?</p>
       <div class="row" style="margin-top:16px;">
-        <button class="btn primary" style="padding:16px;" onclick="goTo('report_generate')">
-          Preencher formulário<br><span style="font-weight:400; font-size:12px;">Descrever a observação e deixar a IA gerar</span>
+        <button class="btn primary" style="padding:16px;" onclick="loadReportPhotos(state.activeReport.id).then(() => goTo('report_generate'))">
+          Preencher formulário<br><span style="font-weight:400; font-size:12px;">Descrever a observação (ou colar o laudo inteiro) e deixar a IA gerar/corrigir</span>
         </button>
         <button class="btn" style="padding:16px;" onclick="goTo('report_import')">
           Importar documento pronto<br><span style="font-weight:400; font-size:12px;">Já tenho um .docx ou .pdf escrito</span>
@@ -1060,21 +1060,47 @@ function viewReportImportReview() {
 
 
 function viewReportGenerate() {
+  const photos = state.reportPhotos || [];
   return `
     <div class="card">
       <h2>${state.activeReport.title}</h2>
-      <p class="subtitle">Descreva o que você observou — a IA vai reformular em linguagem técnica</p>
+      <p class="subtitle">Descreva o que você observou, ou cole o laudo inteiro já escrito — a IA reformula/completa em linguagem técnica, sem inventar fatos que você não escreveu</p>
       ${errorHtml()}
       <form id="generateForm">
-        <label>Observação</label>
-        <textarea name="observation" rows="4" maxlength="600" required placeholder="Ex: parede da sala com rachadura de uns 20cm perto da janela, parece ser só reboco"></textarea>
-        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Descreva em poucas frases o que você observou. Se já tem um documento inteiro escrito, use <a href="#" onclick="goTo('report_choose_source'); return false;">Importar documento pronto</a> em vez de colar aqui.</p>
-        <label>Categorias do item (separadas por vírgula)</label>
+        <label>Observação (pode ser um parágrafo curto ou o texto completo do laudo)</label>
+        <textarea name="observation" rows="14" required placeholder="Escreva livremente: pode ser uma observação curta (ex: parede da sala com rachadura de uns 20cm perto da janela) ou o laudo inteiro já redigido, com todas as seções — não tem limite de tamanho."></textarea>
+        <p style="font-size:11px; color:var(--text-muted); margin:4px 0 0;">Quanto mais detalhe você der, mais completo sai o texto — a IA nunca inventa fato que não esteja aqui.</p>
+        <label>Categorias do item (separadas por vírgula, opcional)</label>
         <input name="item_categories" placeholder="Ex: paredes, infiltracao">
         <div style="margin-top:16px;">
           <button class="btn primary" type="submit">Gerar com IA</button>
         </div>
       </form>
+    </div>
+
+    <div class="card">
+      <h2>Fotos do laudo</h2>
+      <p class="subtitle">Pode anexar as fotos agora, antes mesmo de gerar o texto</p>
+      <form id="photoUploadForm">
+        <label>Adicionar foto (.jpg, .png — até 2MB cada)</label>
+        <input type="file" name="photos" id="photoFileInput" accept="image/*" capture="environment" multiple onchange="handlePhotoFilesSelected()">
+        <p id="photoLocationStatus" style="font-size:12px; color:var(--text-muted); margin:6px 0 0;"></p>
+        <div style="margin-top:12px;"><button class="btn" type="submit">Enviar fotos</button></div>
+      </form>
+      ${photos.length > 0 ? `
+        <div class="row" style="margin-top:16px; flex-wrap:wrap;">
+          ${photos.map((p) => `
+            <div style="max-width:140px;">
+              <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+              <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
+              ${p.latitude != null && p.longitude != null ? `
+                <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
+              ` : ""}
+              <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p class="empty-state">Nenhuma foto anexada ainda.</p>`}
     </div>
   `;
 }
