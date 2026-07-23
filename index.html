@@ -93,8 +93,10 @@
   tr:last-child td { border-bottom: none; }
   .pill { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; display: inline-block; }
   .pill.rascunho { background: var(--warning-bg); color: var(--warning-text); }
-  .pill.revisado { background: var(--accent-bg); color: var(--accent-text); }
+  .pill.em_revisao { background: var(--accent-bg); color: var(--accent-text); }
   .pill.assinado { background: var(--success-bg); color: var(--success-text); }
+  .pill.entregue { background: #E8E6DC; color: #57564F; }
+  .pill.complementado, .pill.retificado { background: var(--danger-bg); color: var(--danger-text); }
 
   .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
   .tabs button {
@@ -118,11 +120,45 @@
 
   code.mono { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
   .hidden { display: none !important; }
+
+  /* -------------------- WIDGET DE AJUDA -------------------- */
+  .help-fab {
+    position: fixed; bottom: 24px; right: 24px; z-index: 50;
+    width: 52px; height: 52px; border-radius: 50%;
+    background: var(--text); color: #fff; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.2);
+  }
+  .help-fab:hover { background: var(--accent); }
+  .help-overlay {
+    position: fixed; inset: 0; background: rgba(44,44,42,0.4); z-index: 60;
+    display: flex; align-items: flex-end; justify-content: flex-end; padding: 24px;
+  }
+  .help-panel {
+    background: var(--surface); border-radius: 12px; border: 1px solid var(--border);
+    width: 360px; max-width: calc(100vw - 48px); max-height: 80vh; overflow-y: auto;
+    padding: 20px; box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+  }
+  .help-panel h3 { margin: 0 0 4px; font-size: 15px; }
+  .help-panel .subtitle { margin: 0 0 14px; }
+  .help-context-chip {
+    display: inline-block; background: var(--accent-bg); color: var(--accent-text);
+    font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; margin-bottom: 14px;
+  }
+  .help-ticket-item { border-bottom: 1px solid var(--border); padding: 10px 0; font-size: 12px; }
+  .help-ticket-item:last-child { border-bottom: none; }
+  .help-ticket-status { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
+  .help-ticket-status.aberto { background: var(--warning-bg); color: var(--warning-text); }
+  .help-ticket-status.respondido { background: var(--success-bg); color: var(--success-text); }
+  .help-ticket-status.fechado { background: #E8E6DC; color: #57564F; }
+  .help-reply-box { background: var(--bg); border-radius: 8px; padding: 8px 10px; margin-top: 6px; font-size: 12px; }
 </style>
 </head>
 <body>
 
 <div id="app"></div>
+<div id="help-widget"></div>
 
 <script>
 // =====================================================================
@@ -144,6 +180,15 @@ const state = {
   reports: [],
   activeReport: null,
   error: null,
+  reportFilterStatus: "all",
+  reportSearch: "",
+  intendedPlan: new URLSearchParams(window.location.search).get("plan"),
+  publicPlans: [],
+  helpOpen: false,
+  helpTab: "new", // "new" | "history"
+  helpTickets: [],
+  helpSubmitting: false,
+  pendingPhotoLocation: null,
 };
 
 function setToken(token, engineer) {
@@ -184,6 +229,9 @@ function goTo(view) {
   state.view = view;
   state.error = null;
   render();
+  if (view === "upgrade") {
+    loadPublicPlans().then(render);
+  }
 }
 
 // =====================================================================
@@ -205,8 +253,7 @@ async function handleRegister(e) {
       }),
     });
     setToken(data.token, data.engineer);
-    await loadDashboardData();
-    goTo("dashboard");
+    await redirectAfterAuth();
   } catch (err) {
     state.error = err.message;
     render();
@@ -222,8 +269,7 @@ async function handleLogin(e) {
       body: JSON.stringify({ email: f.email.value, password: f.password.value }),
     });
     setToken(data.token, data.engineer);
-    await loadDashboardData();
-    goTo("dashboard");
+    await redirectAfterAuth();
   } catch (err) {
     state.error = err.message;
     render();
@@ -232,7 +278,45 @@ async function handleLogin(e) {
 
 function logout() {
   setToken(null, null);
-  goTo("login");
+  // Reload completo (não SPA) de propósito: garante que nenhum dado
+  // da sessão anterior (laudos, clientes, laudo ativo) sobrevive em
+  // memória para a próxima pessoa que logar/cadastrar neste navegador.
+  window.location.href = window.location.pathname;
+}
+
+function formatCurrencyBRL(cents) {
+  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+// Redireciona pro checkout do Stripe do plano informado. Usado tanto
+// pela tela de upgrade quanto pelo fluxo de "vim da landing page já
+// escolhendo um plano pago" logo após cadastro/login.
+async function handleCheckout(planCode) {
+  try {
+    const result = await api("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({ plan_code: planCode }),
+    });
+    window.location.href = result.checkout_url;
+  } catch (err) {
+    state.error = err.message;
+    goTo("upgrade");
+  }
+}
+
+// Depois de logar/cadastrar: se a pessoa veio da landing page já
+// tendo escolhido um plano pago (?plan=start/pro/escritorio na URL),
+// manda direto pro checkout em vez de cair no dashboard. Plano
+// "gratis" ou ausência de parâmetro segue o fluxo normal.
+async function redirectAfterAuth() {
+  const plan = state.intendedPlan;
+  state.intendedPlan = null; // consome uma vez só, não repete em navegações futuras
+  if (plan && plan !== "gratis") {
+    await handleCheckout(plan);
+  } else {
+    await loadDashboardData();
+    goTo("dashboard");
+  }
 }
 
 // =====================================================================
@@ -428,6 +512,46 @@ async function loadReportPhotos(reportId) {
   }
 }
 
+// Chamado quando o engenheiro escolhe/tira a(s) foto(s). Pede a
+// localização do dispositivo NA HORA — não espera até o clique de
+// "Enviar fotos" — porque é o momento mais próximo de quando a foto
+// foi de fato tirada (câmera do celular via capture="environment").
+// Atualiza só o texto de status via DOM direto (não chama render(),
+// que recriaria o <input type=file> e perderia os arquivos escolhidos).
+function handlePhotoFilesSelected() {
+  const input = document.getElementById("photoFileInput");
+  const statusEl = document.getElementById("photoLocationStatus");
+  if (!input || !input.files.length) return;
+
+  state.pendingPhotoLocation = null;
+  if (statusEl) statusEl.textContent = "📍 Capturando localização...";
+
+  if (!navigator.geolocation) {
+    if (statusEl) statusEl.textContent = "Localização não suportada neste navegador — foto será enviada sem coordenada.";
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      state.pendingPhotoLocation = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+        captured_at: new Date().toISOString(),
+      };
+      if (statusEl) {
+        statusEl.textContent = `📍 Localização capturada (precisão de ~${Math.round(pos.coords.accuracy)}m)`;
+      }
+    },
+    (err) => {
+      if (statusEl) {
+        statusEl.textContent = "Não foi possível capturar a localização (permissão negada ou indisponível) — foto será enviada sem coordenada.";
+      }
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
 async function handleUploadPhotos(e) {
   e.preventDefault();
   const f = e.target;
@@ -443,7 +567,16 @@ async function handleUploadPhotos(e) {
   btn.textContent = "Enviando...";
 
   const formData = new FormData();
-  Array.from(fileInput.files).forEach((file) => formData.append("photos", file));
+  const loc = state.pendingPhotoLocation;
+  Array.from(fileInput.files).forEach((file) => {
+    formData.append("photos", file);
+    // Mesma coordenada aplicada a todas as fotos deste envio — elas
+    // foram tiradas na mesma hora/local, no mesmo lote de seleção.
+    formData.append("latitudes", loc ? loc.latitude : "");
+    formData.append("longitudes", loc ? loc.longitude : "");
+    formData.append("accuracies", loc ? loc.accuracy : "");
+    formData.append("captured_ats", loc ? loc.captured_at : "");
+  });
 
   try {
     const res = await fetch(`${API_BASE}/reports/${state.activeReport.id}/photos`, {
@@ -454,6 +587,7 @@ async function handleUploadPhotos(e) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Erro ao enviar fotos.");
 
+    state.pendingPhotoLocation = null;
     await loadReportPhotos(state.activeReport.id);
     render();
   } catch (err) {
@@ -498,6 +632,7 @@ function render() {
   if (!state.token) {
     app.innerHTML = state.view === "register" ? viewRegister() : viewLogin();
     bindAuthForms();
+    document.getElementById("help-widget").innerHTML = "";
     return;
   }
 
@@ -527,6 +662,7 @@ function render() {
     <div class="container">${content}</div>
   `;
   bindAppForms();
+  renderHelpWidget();
 }
 
 function errorHtml() {
@@ -567,13 +703,13 @@ function viewRegister() {
         <h2>Criar conta grátis</h2>
         <p class="subtitle">1 laudo grátis para testar, sem cartão</p>
         ${errorHtml()}
-        <form id="registerForm">
+        <form id="registerForm" autocomplete="off">
           <label>Nome completo</label>
-          <input name="name" required>
+          <input name="name" autocomplete="off" required>
           <label>E-mail</label>
-          <input name="email" type="email" required>
+          <input name="email" type="email" autocomplete="off" required>
           <label>Senha</label>
-          <input name="password" type="password" required minlength="6">
+          <input name="password" type="password" autocomplete="new-password" required minlength="6">
           <div class="row">
             <div>
               <label>Número do CREA</label>
@@ -605,21 +741,122 @@ function bindAuthForms() {
   if (registerForm) registerForm.addEventListener("submit", handleRegister);
 }
 
+const STATUS_LABELS = {
+  rascunho: "Rascunho",
+  em_revisao: "Em revisão",
+  assinado: "Assinado",
+  entregue: "Entregue",
+  complementado: "Complementado",
+  retificado: "Retificado",
+};
+
+function getFilteredReports() {
+  return state.reports.filter((r) => {
+    const matchesStatus = state.reportFilterStatus === "all" || r.status === state.reportFilterStatus;
+    const matchesSearch = !state.reportSearch || r.title.toLowerCase().includes(state.reportSearch.toLowerCase());
+    return matchesStatus && matchesSearch;
+  });
+}
+
+function handleFilterStatusChange(value) {
+  state.reportFilterStatus = value;
+  render();
+}
+
+function handleSearchChange(value) {
+  state.reportSearch = value;
+  render();
+}
+
+async function handleDuplicateReport(reportId) {
+  try {
+    const newReport = await api(`/reports/${reportId}/duplicate`, { method: "POST", body: JSON.stringify({}) });
+    await loadDashboardData();
+    state.activeReport = newReport;
+    goTo("report_choose_source");
+  } catch (err) {
+    if (err.status === 402) {
+      state.error = null;
+      goTo("upgrade");
+    } else {
+      state.error = err.message;
+      render();
+    }
+  }
+}
+
+async function handleSignReport(reportId) {
+  if (!confirm("Assinar este laudo? Depois de assinado, o conteúdo fica travado — para corrigir será preciso destravar explicitamente para revisão.")) return;
+  try {
+    await api(`/reports/${reportId}/sign`, { method: "POST", body: JSON.stringify({}) });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleDeliverReport(reportId) {
+  try {
+    await api(`/reports/${reportId}/deliver`, { method: "PATCH" });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+async function handleUnlockReport(reportId) {
+  if (!confirm("Destravar este laudo para revisão? A versão assinada atual fica preservada no histórico — ao assinar de novo, você vai precisar descrever o que mudou.")) return;
+  try {
+    await api(`/reports/${reportId}/unlock-for-revision`, { method: "POST" });
+    await loadDashboardData();
+    render();
+  } catch (err) {
+    state.error = err.message;
+    render();
+  }
+}
+
+function reportRowActions(r) {
+  const actions = [];
+  if (r.generated_content_json) {
+    actions.push(`<button class="btn" onclick="openPdf('${r.id}')">Ver PDF</button>`);
+  }
+  if (r.status === "em_revisao") {
+    actions.push(`<button class="btn primary" onclick="handleSignReport('${r.id}')">Assinar</button>`);
+  }
+  if (r.status === "assinado") {
+    actions.push(`<button class="btn" onclick="handleDeliverReport('${r.id}')">Marcar entregue</button>`);
+    actions.push(`<button class="btn" onclick="handleUnlockReport('${r.id}')">Destravar p/ revisão</button>`);
+  }
+  if (r.status === "entregue") {
+    actions.push(`<button class="btn" onclick="handleUnlockReport('${r.id}')">Destravar p/ revisão</button>`);
+  }
+  actions.push(`<button class="btn" onclick="handleDuplicateReport('${r.id}')" title="Cria um novo laudo em rascunho com as mesmas seções">Duplicar</button>`);
+  return actions.join(" ");
+}
+
 // ---------------------------------------------------------------
 // View: dashboard
 // ---------------------------------------------------------------
 function viewDashboard() {
-  const reportsRows = state.reports.length
-    ? state.reports.map((r) => `
+  const filtered = getFilteredReports();
+  const reportsRows = filtered.length
+    ? filtered.map((r) => `
         <tr>
           <td>${r.title}</td>
-          <td><span class="pill ${r.status}">${r.status}</span></td>
+          <td><span class="pill ${r.status}">${STATUS_LABELS[r.status] || r.status}</span></td>
           <td>${new Date(r.created_at).toLocaleDateString("pt-BR")}</td>
-          <td>
-            ${r.generated_content_json ? `<button class="btn" onclick="openPdf('${r.id}')">Ver PDF</button>` : "—"}
-          </td>
+          <td style="white-space:nowrap;">${reportRowActions(r)}</td>
         </tr>`).join("")
-    : `<tr><td colspan="4" class="empty-state">Nenhum laudo ainda. Crie o primeiro abaixo.</td></tr>`;
+    : `<tr><td colspan="4" class="empty-state">Nenhum laudo encontrado com esse filtro.</td></tr>`;
+
+  const statusOptions = ["all", ...Object.keys(STATUS_LABELS)]
+    .map((s) => `<option value="${s}" ${state.reportFilterStatus === s ? "selected" : ""}>${s === "all" ? "Todos os status" : STATUS_LABELS[s]}</option>`)
+    .join("");
 
   return `
     ${errorHtml()}
@@ -629,9 +866,14 @@ function viewDashboard() {
     </div>
 
     <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
         <h2 style="margin:0;">Laudos</h2>
         <button class="btn primary" onclick="goTo('new_report')">+ Novo laudo</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <input type="text" placeholder="Buscar por título..." value="${state.reportSearch}"
+               oninput="handleSearchChange(this.value)">
+        <select onchange="handleFilterStatusChange(this.value)">${statusOptions}</select>
       </div>
       <table style="margin-top:12px;">
         <thead><tr><th>Título</th><th>Status</th><th>Criado em</th><th></th></tr></thead>
@@ -879,7 +1121,8 @@ function viewReportDone() {
       ${errorHtml()}
       <form id="photoUploadForm">
         <label>Adicionar foto (.jpg, .png — até 2MB cada)</label>
-        <input type="file" name="photos" accept="image/*" multiple>
+        <input type="file" name="photos" id="photoFileInput" accept="image/*" capture="environment" multiple onchange="handlePhotoFilesSelected()">
+        <p id="photoLocationStatus" style="font-size:12px; color:var(--text-muted); margin:6px 0 0;"></p>
         <div style="margin-top:12px;"><button class="btn" type="submit">Enviar fotos</button></div>
       </form>
       ${photos.length > 0 ? `
@@ -888,6 +1131,9 @@ function viewReportDone() {
             <div style="max-width:140px;">
               <img src="${API_BASE}/reports/${state.activeReport.id}/photos/${p.id}" style="width:100%; border-radius:8px; border:1px solid var(--border);">
               <p style="font-size:11px; color:var(--text-muted); margin:4px 0;">${p.caption || ""}</p>
+              ${p.latitude != null && p.longitude != null ? `
+                <a href="https://www.google.com/maps?q=${p.latitude},${p.longitude}" target="_blank" style="font-size:11px; display:block; margin-bottom:4px;">📍 ver no mapa</a>
+              ` : ""}
               <button class="btn" style="font-size:11px; padding:4px 8px;" onclick="handleDeletePhoto('${p.id}')">Remover</button>
             </div>
           `).join("")}
@@ -900,18 +1146,36 @@ function viewReportDone() {
 // ---------------------------------------------------------------
 // View: upgrade / limite atingido
 // ---------------------------------------------------------------
+async function loadPublicPlans() {
+  if (state.publicPlans.length > 0) return;
+  try {
+    state.publicPlans = await api("/public/plans");
+  } catch (err) {
+    // Não bloqueia a navegação por causa disso — tela mostra erro discreto
+    console.error(err);
+  }
+}
+
 function viewUpgrade() {
+  const paidPlans = state.publicPlans.filter((p) => p.billing_period === "mensal");
+  const cards = paidPlans.length
+    ? paidPlans.map((p) => `
+        <div class="card" style="${p.plan_code === 'pro' ? 'border:2px solid var(--accent);' : ''} text-align:left;">
+          ${p.plan_code === "pro" ? `<span class="pill" style="background:var(--accent-bg); color:var(--accent-text);">Mais popular</span>` : ""}
+          <p style="font-size:15px; font-weight:600; margin:8px 0 2px;">${p.display_name} — ${formatCurrencyBRL(p.price_cents)}/mês</p>
+          <p class="subtitle" style="margin-bottom:12px;">Até ${p.laudos_included} laudos por mês</p>
+          <button class="btn primary" style="width:100%;" onclick="handleCheckout('${p.plan_code}')">Assinar ${p.display_name}</button>
+        </div>`).join("")
+    : `<p class="subtitle">Carregando planos...</p>`;
+
   return `
     <button class="btn" onclick="goTo('dashboard')">← Voltar</button>
-    <div class="card" style="margin-top:12px; text-align:center; max-width:420px; margin-left:auto; margin-right:auto;">
-      <h2>Escolha um plano</h2>
-      <p class="subtitle">Você atingiu o limite de laudos do plano grátis</p>
-      <div class="card" style="border:2px solid var(--accent); text-align:left;">
-        <span class="pill" style="background:var(--accent-bg); color:var(--accent-text);">Mais popular</span>
-        <p style="font-size:15px; font-weight:600; margin:8px 0 2px;">Pro — R$149/mês</p>
-        <p class="subtitle" style="margin-bottom:12px;">Até 20 laudos por mês</p>
-        <button class="btn primary" style="width:100%;" onclick="alert('Checkout do Stripe ainda não configurado — próximo passo do produto.')">Assinar Pro</button>
+    <div style="margin-top:12px; max-width:420px; margin-left:auto; margin-right:auto;">
+      <div class="card" style="text-align:center;">
+        <h2>Escolha um plano</h2>
+        <p class="subtitle">Você atingiu o limite de laudos do plano grátis, ou quer mais capacidade</p>
       </div>
+      ${cards}
     </div>
   `;
 }
@@ -937,6 +1201,147 @@ function bindAppForms() {
 }
 
 // =====================================================================
+// Widget de ajuda — botão flutuante presente em qualquer tela logada.
+// A ideia central: quando o engenheiro clica em "Ajuda", o sistema já
+// sabe em qual laudo e em qual etapa do fluxo ele está, e manda isso
+// junto do chamado — sem precisar perguntar "em qual laudo você
+// estava?" depois.
+// =====================================================================
+const VIEW_LABELS = {
+  dashboard: "Painel principal",
+  new_client: "Cadastro de cliente",
+  new_project: "Cadastro de projeto",
+  new_report: "Criação de laudo",
+  report_choose_source: "Escolha de origem do laudo",
+  report_import: "Importação de documento",
+  report_import_review: "Revisão de documento importado",
+  report_generate: "Geração de texto por IA",
+  report_review: "Revisão do laudo",
+  report_done: "Laudo finalizado",
+  upgrade: "Escolha de plano",
+};
+
+function currentHelpContext() {
+  return {
+    page_context: state.view,
+    page_label: VIEW_LABELS[state.view] || state.view,
+    report_id: state.activeReport ? state.activeReport.id : null,
+    report_title: state.activeReport ? state.activeReport.title : null,
+  };
+}
+
+function toggleHelp() {
+  state.helpOpen = !state.helpOpen;
+  if (state.helpOpen) state.helpTab = "new";
+  renderHelpWidget();
+}
+
+async function switchHelpTab(tab) {
+  state.helpTab = tab;
+  if (tab === "history") await loadHelpTickets();
+  renderHelpWidget();
+}
+
+async function loadHelpTickets() {
+  try {
+    state.helpTickets = await api("/support/tickets");
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function handleSubmitTicket(e) {
+  e.preventDefault();
+  const f = e.target;
+  const btn = f.querySelector("button[type=submit]");
+  state.helpSubmitting = true;
+  btn.disabled = true;
+  btn.textContent = "Enviando...";
+  try {
+    const ctx = currentHelpContext();
+    await api("/support/tickets", {
+      method: "POST",
+      body: JSON.stringify({
+        subject: f.subject.value,
+        message: f.message.value,
+        report_id: ctx.report_id,
+        page_context: ctx.page_context,
+      }),
+    });
+    state.helpSubmitting = false;
+    await switchHelpTab("history");
+  } catch (err) {
+    state.helpSubmitting = false;
+    alert("Não foi possível enviar: " + err.message);
+    renderHelpWidget();
+  }
+}
+
+function helpTicketsHtml() {
+  if (state.helpTickets.length === 0) {
+    return `<p class="subtitle">Nenhum chamado ainda.</p>`;
+  }
+  return state.helpTickets.map((t) => `
+    <div class="help-ticket-item">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <strong>${t.subject}</strong>
+        <span class="help-ticket-status ${t.status}">${t.status}</span>
+      </div>
+      <p style="margin:4px 0; color:var(--text-secondary);">${t.message}</p>
+      ${t.report_title ? `<p style="margin:0; color:var(--text-muted); font-size:11px;">Laudo: ${t.report_title}</p>` : ""}
+      ${t.admin_reply ? `<div class="help-reply-box"><strong>Resposta:</strong> ${t.admin_reply}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+function renderHelpWidget() {
+  const holder = document.getElementById("help-widget");
+  if (!state.token) { holder.innerHTML = ""; return; }
+
+  if (!state.helpOpen) {
+    holder.innerHTML = `<button class="help-fab" onclick="toggleHelp()" title="Precisa de ajuda?">?</button>`;
+    return;
+  }
+
+  const ctx = currentHelpContext();
+
+  const newTabHtml = `
+    <div class="help-context-chip">Contexto: ${ctx.page_label}${ctx.report_title ? " · " + ctx.report_title : ""}</div>
+    <form id="ticketForm">
+      <label>Assunto</label>
+      <input name="subject" required placeholder="Resuma sua dúvida em poucas palavras">
+      <label>Descreva sua dúvida</label>
+      <textarea name="message" rows="4" required placeholder="Conte o que aconteceu ou o que precisa"></textarea>
+      <div style="margin-top:12px;">
+        <button class="btn primary" type="submit" style="width:100%;">Enviar</button>
+      </div>
+    </form>
+  `;
+
+  const historyTabHtml = helpTicketsHtml();
+
+  holder.innerHTML = `
+    <div class="help-overlay" onclick="if(event.target === this) toggleHelp()">
+      <div class="help-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3>Central de ajuda</h3>
+          <button class="btn" style="padding:4px 10px;" onclick="toggleHelp()">Fechar</button>
+        </div>
+        <p class="subtitle">Alguma dúvida sobre esse laudo ou o app? Fale com a gente.</p>
+        <div class="tabs">
+          <button class="${state.helpTab === 'new' ? 'active' : ''}" onclick="switchHelpTab('new')">Nova pergunta</button>
+          <button class="${state.helpTab === 'history' ? 'active' : ''}" onclick="switchHelpTab('history')">Meus chamados</button>
+        </div>
+        ${state.helpTab === "new" ? newTabHtml : historyTabHtml}
+      </div>
+    </div>
+  `;
+
+  const ticketForm = document.getElementById("ticketForm");
+  if (ticketForm) ticketForm.addEventListener("submit", handleSubmitTicket);
+}
+
+// =====================================================================
 // Boot
 // =====================================================================
 async function boot() {
@@ -944,7 +1349,9 @@ async function boot() {
     await loadDashboardData();
     state.view = "dashboard";
   } else {
-    state.view = "login";
+    // Quem chega com ?plan=... veio da landing page escolhendo um
+    // plano — manda direto pro cadastro, não pro login.
+    state.view = state.intendedPlan ? "register" : "login";
   }
   render();
 }
